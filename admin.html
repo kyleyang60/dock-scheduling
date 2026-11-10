@@ -1,0 +1,752 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+  <base target="_top">
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>碼頭排程系統 - 主管管理後台</title>
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.10.0/font/bootstrap-icons.css" rel="stylesheet">
+  <style>
+    body { background-color: #f4f6f9; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+    .navbar-brand { font-weight: bold; letter-spacing: 1px; }
+    .card { border-radius: 10px; border: none; box-shadow: 0 2px 10px rgba(0,0,0,0.05); }
+    .stat-card { border-left: 4px solid #0d6efd; }
+    
+    /* 進/出貨 顏色標示 */
+    .badge-op-進貨 { background-color: #0d6efd; color: #fff; font-size: 0.85rem; padding: 0.35em 0.65em; }
+    .badge-op-出貨 { background-color: #198754; color: #fff; font-size: 0.85rem; padding: 0.35em 0.65em; }
+    .badge-priority-急單 { background-color: #dc3545; color: #fff; font-size: 0.75rem; vertical-align: middle; }
+    .badge-priority-一般 { background-color: #6c757d; color: #fff; font-size: 0.75rem; vertical-align: middle; }
+
+    /* 物流狀態 顏色標示 (簽到:黃, 作業中:青, 放行:粉紅, 離廠:灰) */
+    .badge-logistics-簽到 { background-color: #ffc107; color: #000; font-weight: bold; }
+    .badge-logistics-作業中 { background-color: #0dcaf0; color: #000; font-weight: bold; }
+    .badge-logistics-放行 { background-color: #d63384; color: #fff; font-weight: bold; }
+    .badge-logistics-離廠 { background-color: #6c757d; color: #fff; font-weight: bold; }
+
+    /* 訂單狀態 (預約中、已核准、已完成) 不顯示顏色 */
+    .badge-order-status { background-color: transparent; border: 1px solid #ced4da; color: #495057; font-weight: normal; }
+
+    .nav-tabs .nav-link { font-weight: 500; color: #495057; }
+    .nav-tabs .nav-link.active { font-weight: bold; color: #0d6efd; border-bottom: 3px solid #0d6efd; }
+
+    /* 表頭排序與篩選樣式 */
+    th.sortable { cursor: pointer; user-select: none; white-space: nowrap; }
+    th.sortable:hover { background-color: #e9ecef; }
+    .filter-select { font-size: 0.75rem; padding: 2px 4px; margin-top: 4px; display: block; width: 100%; }
+
+    /* 按鈕點擊時的轉圈動畫 (同 Gatekeeper) */
+    @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+    .spin-icon { display: inline-block; animation: spin 1s linear infinite; }
+    .daily-pallet-table { table-layout: fixed; }
+    .daily-pallet-table th { --bs-table-bg: #dbe9f6; background-color: #dbe9f6; font-weight: 600; }
+  </style>
+  <!-- Supabase 版：登入 + 後端功能（取代 Apps Script） -->
+  <script>window.DOCK_PAGE = 'admin';</script>
+  <script src="js/config.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.min.js"></script>
+  <script src="js/auth.js"></script>
+  <script src="js/api.js"></script>
+</head>
+<body>
+
+  <nav class="navbar navbar-expand-lg navbar-dark bg-dark mb-3">
+    <div class="container-fluid px-4">
+      <a class="navbar-brand" href="#"><i class="bi bi-shield-lock-fill me-2"></i>碼頭排程系統 | 主管控制台</a>
+      <span class="navbar-text text-light small">Phase 3 Management Module</span>
+    </div>
+  </nav>
+
+  <div class="container-fluid px-4">
+    <!-- 主管四大模組頁籤 -->
+    <ul class="nav nav-tabs mb-4" id="adminTabs" role="tablist">
+      <li class="nav-item">
+        <button class="nav-link active" id="bookings-tab" data-bs-toggle="tab" data-bs-target="#tabBookings" type="button"><i class="bi bi-list-check me-1"></i>預約單管理</button>
+      </li>
+      <li class="nav-item">
+        <button class="nav-link" id="locks-tab" data-bs-toggle="tab" data-bs-target="#tabLocks" type="button" onclick="loadLockRules()"><i class="bi bi-slash-circle me-1"></i>碼頭關閉 / 維護</button>
+      </li>
+      <li class="nav-item">
+        <button class="nav-link" id="duty-tab" data-bs-toggle="tab" data-bs-target="#tabDuty" type="button" onclick="loadDutySchedule()"><i class="bi bi-person-badge me-1"></i>值班人員綁定</button>
+      </li>
+      <li class="nav-item">
+        <button class="nav-link" id="reports-tab" data-bs-toggle="tab" data-bs-target="#tabReports" type="button"><i class="bi bi-bar-chart-line me-1"></i>跨區間報表</button>
+      </li>
+    </ul>
+
+    <div class="tab-content" id="adminTabContent">
+      
+      <!-- 頁籤 1: 預約單管理 -->
+      <div class="tab-pane fade show active" id="tabBookings">
+        <div class="row g-3 mb-4">
+          <div class="col-md-4">
+            <div class="card p-3 stat-card">
+              <div class="text-muted small">選擇查詢日期</div>
+              <input type="date" id="searchDate" class="form-control form-control-sm mt-1" onchange="loadDashboardData()">
+            </div>
+          </div>
+          <div class="col-md-4">
+            <div class="card p-3">
+              <div class="text-muted small">當日預計排程總板數</div>
+              <h3 class="fw-bold mb-0 text-primary" id="statPallets">0 / 200 板</h3>
+            </div>
+          </div>
+        </div>
+
+        <div class="card p-3">
+          <div class="d-flex justify-content-between align-items-center mb-3">
+            <h5 class="fw-bold mb-0"><i class="bi bi-table me-2"></i>當日預約清單</h5>
+            <button class="btn btn-outline-secondary btn-sm" id="refreshBtn" onclick="manualRefresh()"><i class="bi bi-arrow-clockwise me-1" id="refreshIcon"></i>重新整理</button>
+          </div>
+
+          <div class="table-responsive">
+            <table class="table table-hover align-middle" style="font-size: 0.88rem;">
+              <thead class="table-light">
+                <tr>
+                  <!-- 1. 預計到廠 (ETA) 挪至第一欄 -->
+                  <th class="sortable" onclick="handleSort('etaFull')">
+                    預計到廠 (ETA) <i class="bi bi-arrow-down-up small" id="sort-icon-etaFull"></i>
+                  </th>
+                  <!-- 2. 客戶 / 貨品 -->
+                  <th class="sortable" onclick="handleSort('customerName')">
+                    客戶 / 貨品 <i class="bi bi-arrow-down-up small" id="sort-icon-customerName"></i>
+                  </th>
+                  <!-- 3. 拆開獨立欄位：進出貨 -->
+                  <th>
+                    <span class="sortable" onclick="handleSort('operationType')">進出貨 <i class="bi bi-arrow-down-up small" id="sort-icon-operationType"></i></span>
+                    <select class="form-select filter-select" id="filter-operationType" onchange="applyFilters()">
+                      <option value="">全部</option>
+                      <option value="進貨">進貨</option>
+                      <option value="出貨">出貨</option>
+                    </select>
+                  </th>
+                  <!-- 4. 拆開獨立欄位：保稅 -->
+                  <th>
+                    <span class="sortable" onclick="handleSort('taxType')">保稅 <i class="bi bi-arrow-down-up small" id="sort-icon-taxType"></i></span>
+                    <select class="form-select filter-select" id="filter-taxType" onchange="applyFilters()">
+                      <option value="">全部</option>
+                      <option value="保稅">保稅</option>
+                      <option value="非保稅">非保稅</option>
+                    </select>
+                  </th>
+                  <!-- 5. 車型 / 車號 -->
+                  <th class="sortable" onclick="handleSort('vehicleType')">
+                    車型 / 車號 <i class="bi bi-arrow-down-up small" id="sort-icon-vehicleType"></i>
+                  </th>
+                  <!-- 6. 碼頭 -->
+                  <th>
+                    <span class="sortable" onclick="handleSort('assignedDock')">碼頭 <i class="bi bi-arrow-down-up small" id="sort-icon-assignedDock"></i></span>
+                    <select class="form-select filter-select" id="filter-assignedDock" onchange="applyFilters()">
+                      <option value="">全部碼頭</option>
+                    </select>
+                  </th>
+                  <!-- 7. 板數 (換算) -->
+                  <th class="sortable" onclick="handleSort('convertedPallets')">
+                    板數 (換算) <i class="bi bi-arrow-down-up small" id="sort-icon-convertedPallets"></i>
+                  </th>
+                  <!-- 8. 原第一欄：單號 / 時間 (移至此處) -->
+                  <th class="sortable" onclick="handleSort('bookingId')">
+                    單號 / 時間 <i class="bi bi-arrow-down-up small" id="sort-icon-bookingId"></i>
+                  </th>
+                  <!-- 9. 狀態 (最右側，不排序) -->
+                  <th style="white-space:nowrap;">狀態</th>
+                  <!-- 10. 操作 (最右側，不排序) -->
+                  <th style="white-space:nowrap;">操作</th>
+                </tr>
+              </thead>
+              <tbody id="bookingTableBody">
+                <tr><td colspan="10" class="text-center py-4 text-muted">資料載入中...</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      <!-- 頁籤 2: 碼頭關閉 / 維護 (Lock Management) -->
+      <div class="tab-pane fade" id="tabLocks">
+        <div class="row g-3">
+          <div class="col-md-4">
+            <div class="card p-3">
+              <h6 class="fw-bold mb-3"><i class="bi bi-plus-circle me-2"></i>新增關閉 / 維護時段</h6>
+              <div class="mb-3">
+                <label class="form-label small">日期</label>
+                <input type="date" id="lockDate" class="form-control form-control-sm">
+              </div>
+              <div class="mb-3">
+                <label class="form-label small">碼頭</label>
+                <select id="lockDock" class="form-select form-select-sm">
+                  <option value="ALL">全碼頭關閉</option>
+                  <option value="1號標準碼頭">1號標準碼頭</option>
+                  <option value="2號標準碼頭">2號標準碼頭</option>
+                  <option value="3號標準碼頭">3號標準碼頭</option>
+                  <option value="4號標準碼頭">4號標準碼頭</option>
+                  <option value="5號標準碼頭">5號標準碼頭</option>
+                  <option value="6號鷗翼平面卸貨區">6號鷗翼平面卸貨區</option>
+                  <option value="7號急單專用碼頭">7號急單專用碼頭</option>
+                  <option value="壓板停放區1">壓板停放區1</option>
+                  <option value="壓板停放區2">壓板停放區2</option>
+                </select>
+              </div>
+              <div class="mb-3">
+                <label class="form-label small">時段</label>
+                <select id="lockTimeSlot" class="form-select form-select-sm">
+                  <option value="ALL">全天鎖定</option>
+                  <option value="07:00">07:00</option><option value="07:30">07:30</option>
+                  <option value="08:00">08:00</option><option value="08:30">08:30</option>
+                  <option value="09:00">09:00</option><option value="09:30">09:30</option>
+                  <option value="10:00">10:00</option><option value="10:30">10:30</option>
+                  <option value="11:00">11:00</option><option value="11:30">11:30</option>
+                  <option value="12:00">12:00 (午休)</option><option value="12:30">12:30 (午休)</option>
+                  <option value="13:00">13:00</option><option value="13:30">13:30</option>
+                  <option value="14:00">14:00</option><option value="14:30">14:30</option>
+                  <option value="15:00">15:00</option><option value="15:30">15:30</option>
+                  <option value="16:00">16:00</option><option value="16:30">16:30</option>
+                  <option value="17:00 以後">17:00 以後</option>
+                </select>
+              </div>
+              <div class="mb-3">
+                <label class="form-label small">關閉原因</label>
+                <input type="text" id="lockReason" class="form-control form-control-sm" placeholder="例如: 午休、碼頭設備維修">
+              </div>
+              <button class="btn btn-primary btn-sm w-100" onclick="submitAddLock()"><i class="bi bi-save me-1"></i>儲存鎖定規則</button>
+            </div>
+          </div>
+
+          <div class="col-md-8">
+            <div class="card p-3">
+              <h6 class="fw-bold mb-3"><i class="bi bi-lock me-2"></i>現有鎖定規則列表</h6>
+              <div class="table-responsive">
+                <table class="table table-hover align-middle small">
+                  <thead class="table-light">
+                    <tr>
+                      <th>鎖定日期</th>
+                      <th>目標碼頭</th>
+                      <th>時段</th>
+                      <th>原因</th>
+                      <th>操作</th>
+                    </tr>
+                  </thead>
+                  <tbody id="lockRulesTableBody">
+                    <tr><td colspan="5" class="text-center text-muted">讀取中...</td></tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 頁籤 3: 值班人員綁定 (Duty Schedule) - 可分開設定與起訖日期 -->
+      <div class="tab-pane fade" id="tabDuty">
+        <div class="row g-3" style="max-width: 900px;">
+          <!-- 現場值班設定 -->
+          <div class="col-md-6">
+            <div class="card p-4 h-100">
+              <h6 class="fw-bold mb-3 text-primary"><i class="bi bi-building-gear me-2"></i>現場值班人員設定</h6>
+              <div class="mb-3">
+                <label class="form-label small">開始日期</label>
+                <input type="date" id="dutyWhStartDate" class="form-control form-control-sm">
+              </div>
+              <div class="mb-3">
+                <label class="form-label small">結束日期</label>
+                <input type="date" id="dutyWhEndDate" class="form-control form-control-sm">
+              </div>
+              <div class="mb-3">
+                <label class="form-label small">現場值班主管 / 人員姓名</label>
+                <input type="text" id="dutyWarehouseStaff" class="form-control form-control-sm" placeholder="例如: 張三, 李四">
+              </div>
+              <button class="btn btn-primary btn-sm w-100 mt-2" onclick="submitWhDutySchedule()"><i class="bi bi-check-circle me-1"></i>儲存現場值班排班</button>
+            </div>
+          </div>
+
+          <!-- 客服值班設定 -->
+          <div class="col-md-6">
+            <div class="card p-4 h-100">
+              <h6 class="fw-bold mb-3 text-success"><i class="bi bi-headset me-2"></i>客服值班人員設定</h6>
+              <div class="mb-3">
+                <label class="form-label small">開始日期</label>
+                <input type="date" id="dutyCsStartDate" class="form-control form-control-sm">
+              </div>
+              <div class="mb-3">
+                <label class="form-label small">結束日期</label>
+                <input type="date" id="dutyCsEndDate" class="form-control form-control-sm">
+              </div>
+              <div class="mb-3">
+                <label class="form-label small">客服值班人員姓名</label>
+                <input type="text" id="dutyCSStaff" class="form-control form-control-sm" placeholder="例如: 王五, 陳六">
+              </div>
+              <button class="btn btn-success btn-sm w-100 mt-2" onclick="submitCsDutySchedule()"><i class="bi bi-check-circle me-1"></i>儲存客服值班排班</button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 頁籤 4: 跨區間報表 -->
+      <div class="tab-pane fade" id="tabReports">
+        <div class="card p-3 mb-4">
+          <div class="row g-3 align-items-end">
+            <div class="col-md-3">
+              <label class="form-label small">起始日期</label>
+              <input type="date" id="reportStartDate" class="form-control form-control-sm">
+            </div>
+            <div class="col-md-3">
+              <label class="form-label small">結束日期</label>
+              <input type="date" id="reportEndDate" class="form-control form-control-sm">
+            </div>
+            <div class="col-md-2">
+              <button class="btn btn-primary btn-sm w-100" onclick="generateReport()"><i class="bi bi-search me-1"></i>查詢報表</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="row g-3 mb-4" id="reportResultArea" style="display:none;">
+          <div class="col-12">
+            <div class="card p-3">
+              <h6 class="fw-bold mb-3">區間每日板數</h6>
+              <div id="rptDailyPallets">
+                <!-- 動態載入每日板數，每 10 天一列 -->
+              </div>
+            </div>
+          </div>
+
+          <div class="col-md-3">
+            <div class="card p-3 text-center">
+              <div class="text-muted small">期間總預約車趟</div>
+              <h3 class="fw-bold text-dark mt-1" id="rptTotalBookings">0</h3>
+            </div>
+          </div>
+          <div class="col-md-3">
+            <div class="card p-3 text-center">
+              <div class="text-muted small">期間總進出板數</div>
+              <h3 class="fw-bold text-primary mt-1" id="rptTotalPallets">0 板</h3>
+            </div>
+          </div>
+          <div class="col-md-3">
+            <div class="card p-3 text-center">
+              <div class="text-muted small">進貨總計</div>
+              <h4 class="fw-bold text-success mt-1" id="rptInbound">0 板 (0車)</h4>
+            </div>
+          </div>
+          <div class="col-md-3">
+            <div class="card p-3 text-center">
+              <div class="text-muted small">出貨總計</div>
+              <h4 class="fw-bold text-warning mt-1" id="rptOutbound">0 板 (0車)</h4>
+            </div>
+          </div>
+
+          <div class="col-12">
+            <div class="card p-3">
+              <h6 class="fw-bold mb-3">原始單位彙整 (箱/車/桶等)</h6>
+              <ul class="list-group list-group-flush" id="rptUnitSummary">
+                <!-- 動態載入單位統計 -->
+              </ul>
+            </div>
+          </div>
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- 編輯 Modal -->
+  <div class="modal fade" id="editModal" tabindex="-1">
+    <div class="modal-dialog">
+      <div class="modal-content">
+        <div class="modal-header">
+          <h5 class="modal-title">審核與調整預約單</h5>
+          <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+        </div>
+        <div class="modal-body">
+          <input type="hidden" id="editBookingId">
+          <div class="mb-3">
+            <label class="form-label small">預約單號</label>
+            <input type="text" id="displayBookingId" class="form-control" readonly>
+          </div>
+          <div class="row g-2 mb-3">
+            <div class="col-md-6">
+              <label class="form-label small">預約日期</label>
+              <input type="date" id="editEtaDate" class="form-control">
+            </div>
+            <div class="col-md-6">
+              <label class="form-label small">預約時段</label>
+              <select id="editEtaSlot" class="form-select">
+                <option value="07:00">07:00</option><option value="07:30">07:30</option>
+                <option value="08:00">08:00</option><option value="08:30">08:30</option>
+                <option value="09:00">09:00</option><option value="09:30">09:30</option>
+                <option value="10:00">10:00</option><option value="10:30">10:30</option>
+                <option value="11:00">11:00</option><option value="11:30">11:30</option>
+                <option value="13:00">13:00</option><option value="13:30">13:30</option>
+                <option value="14:00">14:00</option><option value="14:30">14:30</option>
+                <option value="15:00">15:00</option><option value="15:30">15:30</option>
+                <option value="16:00">16:00</option><option value="16:30">16:30</option>
+                <option value="17:00 以後">17:00 以後</option>
+              </select>
+            </div>
+          </div>
+          <div class="mb-3">
+            <label class="form-label small">指派碼頭</label>
+            <select id="editDock" class="form-select">
+              <option value="1號標準碼頭">1號標準碼頭</option>
+              <option value="2號標準碼頭">2號標準碼頭</option>
+              <option value="3號標準碼頭">3號標準碼頭</option>
+              <option value="4號標準碼頭">4號標準碼頭</option>
+              <option value="5號標準碼頭">5號標準碼頭</option>
+              <option value="6號鷗翼平面卸貨區">6號鷗翼平面卸貨區</option>
+              <option value="7號急單專用碼頭">7號急單專用碼頭</option>
+              <option value="壓板停放區1">壓板停放區1</option>
+              <option value="壓板停放區2">壓板停放區2</option>
+            </select>
+          </div>
+          <div class="mb-3">
+            <label class="form-label small">單據狀態</label>
+            <select id="editStatus" class="form-select">
+              <option value="預約中">預約中</option>
+              <option value="已核准">已核准</option>
+              <option value="已完成">已完成</option>
+              <option value="取消">取消</option>
+            </select>
+          </div>
+          <div class="mb-3">
+            <label class="form-label small">主管審核備註</label>
+            <textarea id="editRemarks" class="form-control" rows="2" placeholder="填寫調整原因"></textarea>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">取消</button>
+          <button type="button" class="btn btn-primary" onclick="submitEdit()">儲存變更</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+  <script>
+    let rawBookings = [];      // 原始資料
+    let processedData = [];    // 篩選與排序後的資料
+    let sortColumn = 'etaFull'; // 預設排序欄位：預計到廠時間
+    let sortAsc = true;         // 預設由小到大 (升冪)
+
+    document.addEventListener('DOMContentLoaded', () => {
+      const todayStr = (() => { const d = new Date(); return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0'); })(); // 本地時區日期，避免 08:00 前取到前一天
+      document.getElementById('searchDate').value = todayStr;
+      document.getElementById('lockDate').value = todayStr;
+      document.getElementById('reportStartDate').value = todayStr;
+      document.getElementById('reportEndDate').value = todayStr;
+
+      // 值班起訖預設值
+      document.getElementById('dutyWhStartDate').value = todayStr;
+      document.getElementById('dutyWhEndDate').value = todayStr;
+      document.getElementById('dutyCsStartDate').value = todayStr;
+      document.getElementById('dutyCsEndDate').value = todayStr;
+
+      loadDashboardData();
+      // 只在第一次載入時更新；之後需手動按「重新整理」
+    });
+
+    // 1. 載入並處理預約單資料
+    function loadDashboardData(onCompleteCallback) {
+      const targetDate = document.getElementById('searchDate').value;
+      const done = () => { if (typeof onCompleteCallback === 'function') onCompleteCallback(); };
+      authRun()
+        .withSuccessHandler(res => { done(); renderDashboard(res); })
+        .withFailureHandler(err => { done(); alert('載入失敗：' + err); })
+        .getAdminDashboardData(targetDate);
+    }
+
+    // 手動刷新按鈕：禁用按鈕並旋轉圖示，資料讀取完畢後恢復 (同 Gatekeeper)
+    function manualRefresh() {
+      const btn = document.getElementById('refreshBtn');
+      const icon = document.getElementById('refreshIcon');
+      btn.disabled = true;
+      icon.classList.add('spin-icon');
+
+      loadDashboardData(() => {
+        btn.disabled = false;
+        icon.classList.remove('spin-icon');
+      });
+    }
+
+    function renderDashboard(res) {
+      if (!res.success) { alert(res.message); return; }
+      document.getElementById('statPallets').innerText = `${res.totalPallets} / ${res.dailyPalletLimit || 200} 板`;
+
+      // 補強每筆資料的完整 ETA 字串以供排序
+      rawBookings = res.bookings.map(b => ({
+        ...b,
+        etaFull: `${b.etaDate || ''} ${b.etaTimeSlot || ''}`.trim()
+      }));
+
+      // 動態建構碼頭下拉選單
+      const docks = [...new Set(rawBookings.map(b => b.assignedDock).filter(Boolean))];
+      const dockSelect = document.getElementById('filter-assignedDock');
+      dockSelect.innerHTML = '<option value="">全部碼頭</option>' + 
+        docks.map(d => `<option value="${d}">${d}</option>`).join('');
+
+      applyFiltersAndSort();
+    }
+
+    // 排序與篩選邏輯
+    function handleSort(col) {
+      if (sortColumn === col) {
+        sortAsc = !sortAsc;
+      } else {
+        sortColumn = col;
+        sortAsc = true;
+      }
+      applyFiltersAndSort();
+    }
+
+    function applyFilters() {
+      applyFiltersAndSort();
+    }
+
+    function applyFiltersAndSort() {
+      const opFilter = document.getElementById('filter-operationType').value;
+      const taxFilter = document.getElementById('filter-taxType').value;
+      const dockFilter = document.getElementById('filter-assignedDock').value;
+
+      // 1. 執行篩選
+      processedData = rawBookings.filter(b => {
+        if (opFilter && b.operationType !== opFilter) return false;
+        if (taxFilter && b.taxType !== taxFilter) return false;
+        if (dockFilter && b.assignedDock !== dockFilter) return false;
+        return true;
+      });
+
+      // 2. 執行排序 (依據所選欄位)
+      processedData.sort((a, b) => {
+        let valA = a[sortColumn] ?? '';
+        let valB = b[sortColumn] ?? '';
+
+        if (typeof valA === 'number' && typeof valB === 'number') {
+          return sortAsc ? valA - valB : valB - valA;
+        }
+        return sortAsc ? String(valA).localeCompare(String(valB), 'zh-TW') : String(valB).localeCompare(String(valA), 'zh-TW');
+      });
+
+      renderTable();
+    }
+
+    function renderTable() {
+      const tbody = document.getElementById('bookingTableBody');
+      if (processedData.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="10" class="text-center py-4 text-muted">無符合條件的預約紀錄</td></tr>';
+        return;
+      }
+
+      tbody.innerHTML = processedData.map(b => {
+        // 物流狀態顏色徽章 (簽到:黃, 作業中:青, 放行:粉紅, 離廠:灰)
+        const logisticsStatus = b.logisticsStatus || b.status; 
+        const logisticsBadgeClass = `badge-logistics-${logisticsStatus}`;
+
+        // 訂單狀態 (預約中、已核准、已完成) 不額外顯示背景色
+        const orderStatusBadge = `<span class="badge badge-order-status">${b.status}</span>`;
+        const logisticsBadge = logisticsStatus && ['簽到','作業中','放行','離廠'].includes(logisticsStatus)
+          ? `<span class="badge ${logisticsBadgeClass} ms-1">${logisticsStatus}</span>` : '';
+
+        return `
+          <tr>
+            <!-- 1. 預計到廠 (ETA) -->
+            <td>${b.etaDate || ''} <strong>${b.etaTimeSlot || ''}</strong></td>
+            <!-- 2. 客戶 / 貨品 -->
+            <td>
+              <span class="badge badge-priority-${b.priority} me-1">${b.priority}</span>
+              <strong>${b.customerName || ''}</strong> (${b.productName || ''})
+            </td>
+            <!-- 3. 進出貨 (獨立欄位 + 底色標示) -->
+            <td>
+              <span class="badge badge-op-${b.operationType}">${b.operationType}</span>
+            </td>
+            <!-- 4. 保稅 (獨立欄位) -->
+            <td>
+              <span class="badge bg-light text-dark border">${b.taxType || '非保稅'}</span>
+            </td>
+            <!-- 5. 車型 / 車號 -->
+            <td>${b.vehicleType || ''}<br><small class="text-muted">${b.plateNumber || ''}</small></td>
+            <!-- 6. 碼頭 -->
+            <td><span class="badge bg-light text-dark border">${b.assignedDock || '未指派'}</span></td>
+            <!-- 7. 板數 (換算) -->
+            <td><strong>${b.convertedPallets || 0}</strong> 板 (${b.quantity || 0}${b.unit || ''})</td>
+            <!-- 8. 單號 / 時間 (挪至此處) -->
+            <td><strong>${b.bookingId}</strong><br><small class="text-muted">${b.createdAt || ''}</small></td>
+            <!-- 9. 狀態 (最右側，訂單狀態無底色 + 物流狀態專屬底色) -->
+            <td>${orderStatusBadge}${logisticsBadge}</td>
+            <!-- 10. 操作 (最右側) -->
+            <td><button class="btn btn-outline-primary btn-sm" onclick="openEditModal('${b.bookingId}')">管理</button></td>
+          </tr>
+        `;
+      }).join('');
+    }
+
+    function openEditModal(bookingId) {
+      const item = rawBookings.find(b => b.bookingId === bookingId);
+      if (!item) return;
+
+      document.getElementById('editBookingId').value = item.bookingId;
+      document.getElementById('displayBookingId').value = item.bookingId;
+      document.getElementById('editEtaDate').value = item.etaDate || '';
+      document.getElementById('editEtaSlot').value = item.etaTimeSlot || '08:00';
+      document.getElementById('editDock').value = item.assignedDock || '1號標準碼頭';
+      document.getElementById('editStatus').value = item.status;
+      document.getElementById('editRemarks').value = item.remark || '';
+
+      new bootstrap.Modal(document.getElementById('editModal')).show();
+    }
+
+    function submitEdit() {
+      const bookingId = document.getElementById('editBookingId').value;
+      const etaDate = document.getElementById('editEtaDate').value;
+      const etaSlot = document.getElementById('editEtaSlot').value;
+      const dock = document.getElementById('editDock').value;
+      const status = document.getElementById('editStatus').value;
+      const remarks = document.getElementById('editRemarks').value;
+
+      authRun()
+        .withSuccessHandler(res => {
+          if (res.success) {
+            bootstrap.Modal.getInstance(document.getElementById('editModal')).hide();
+            loadDashboardData();
+          } else { alert(res.message); }
+        })
+        .updateAdminBooking(bookingId, dock, status, remarks, etaDate, etaSlot);
+    }
+
+    // 2. 碼頭關閉 / 維護
+    function loadLockRules() {
+      authRun()
+        .withSuccessHandler(renderLockRules)
+        .getLockRules();
+    }
+
+    function renderLockRules(rules) {
+      const tbody = document.getElementById('lockRulesTableBody');
+      if (!rules || rules.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="5" class="text-center text-muted">目前無任何鎖定規則</td></tr>';
+        return;
+      }
+      tbody.innerHTML = rules.map(r => `
+        <tr>
+          <td>${r.lockDate}</td>
+          <td><span class="badge bg-secondary">${r.lockDock}</span></td>
+          <td>${r.lockTimeSlot}</td>
+          <td>${r.reason}</td>
+          <td><button class="btn btn-outline-danger btn-sm" onclick="deleteLock(${r.rowIndex})">刪除</button></td>
+        </tr>
+      `).join('');
+    }
+
+    function submitAddLock() {
+      const lockData = {
+        date: document.getElementById('lockDate').value,
+        dock: document.getElementById('lockDock').value,
+        timeSlot: document.getElementById('lockTimeSlot').value,
+        reason: document.getElementById('lockReason').value
+      };
+
+      authRun()
+        .withSuccessHandler(res => {
+          alert(res.message);
+          loadLockRules();
+        })
+        .addLockRule(lockData);
+    }
+
+    function deleteLock(rowIndex) {
+      if (confirm('確定要刪除這條鎖定規則嗎？')) {
+        authRun()
+          .withSuccessHandler(res => {
+            alert(res.message);
+            loadLockRules();
+          })
+          .deleteLockRule(rowIndex);
+      }
+    }
+
+    // 3. 值班人員獨立排班 (支援起訖日期區間)
+   // 3. 值班人員獨立排班 (支援起訖日期區間)
+function loadDutySchedule() {
+  const todayStr = document.getElementById('searchDate').value;
+  authRun()
+    .withSuccessHandler(res => {
+      document.getElementById('dutyWarehouseStaff').value = res.warehouseStaff || '';
+      document.getElementById('dutyCSStaff').value = res.csStaff || '';
+    })
+    .getDutySchedule(todayStr);
+}
+
+// 替換現場值班儲存邏輯
+function submitWhDutySchedule() {
+  const startDate = document.getElementById('dutyWhStartDate').value;
+  const endDate = document.getElementById('dutyWhEndDate').value;
+  const whStaff = document.getElementById('dutyWarehouseStaff').value;
+
+  if (!startDate || !endDate) { alert('請填寫現場值班起訖日期'); return; }
+
+  authRun()
+    .withSuccessHandler(res => alert(res.message))
+    .saveDutyScheduleRange(startDate, endDate, whStaff, 'warehouse');
+}
+
+// 替換客服值班儲存邏輯
+function submitCsDutySchedule() {
+  const startDate = document.getElementById('dutyCsStartDate').value;
+  const endDate = document.getElementById('dutyCsEndDate').value;
+  const csStaff = document.getElementById('dutyCSStaff').value;
+
+  if (!startDate || !endDate) { alert('請填寫客服值班起訖日期'); return; }
+
+  authRun()
+    .withSuccessHandler(res => alert(res.message))
+    .saveDutyScheduleRange(startDate, endDate, csStaff, 'cs');
+}
+
+    // 4. 報表統計
+    function generateReport() {
+      const start = document.getElementById('reportStartDate').value;
+      const end = document.getElementById('reportEndDate').value;
+
+      authRun()
+        .withSuccessHandler(res => {
+          if (!res.success) { alert(res.message); return; }
+          const s = res.summary;
+          document.getElementById('reportResultArea').style.display = 'flex';
+          document.getElementById('rptTotalBookings').innerText = s.totalBookings;
+          document.getElementById('rptTotalPallets').innerText = s.totalPallets + ' 板';
+          document.getElementById('rptInbound').innerText = `${s.inboundPallets} 板 (${s.inboundVehicles}車)`;
+          document.getElementById('rptOutbound').innerText = `${s.outboundPallets} 板 (${s.outboundVehicles}車)`;
+
+          renderDailyPallets(s.dailyPallets || {});
+
+          const ul = document.getElementById('rptUnitSummary');
+          ul.innerHTML = Object.keys(s.unitSummary).map(unit => `
+            <li class="list-group-item d-flex justify-content-between align-items-center">
+              ${unit} 總累計
+              <span class="badge bg-primary rounded-pill">${s.unitSummary[unit]} ${unit}</span>
+            </li>
+          `).join('');
+        })
+        .getRangeReport(start, end);
+    }
+
+    // 區間每日板數：每 10 天一列 (上方日期、下方板數)
+    function renderDailyPallets(dailyPallets) {
+      const dates = Object.keys(dailyPallets).sort();
+      const DAYS_PER_ROW = 10;
+      let html = '';
+      for (let i = 0; i < dates.length; i += DAYS_PER_ROW) {
+        const chunk = dates.slice(i, i + DAYS_PER_ROW);
+        const fill = DAYS_PER_ROW - chunk.length; // 最後一列補空格，讓欄寬一致
+        const head = chunk.map(d => `<th>${Number(d.slice(5, 7))}/${Number(d.slice(8, 10))}</th>`).join('') + '<th></th>'.repeat(fill);
+        const body = chunk.map(d => `<td>${dailyPallets[d]} 板</td>`).join('') + '<td></td>'.repeat(fill);
+        html += `
+          <table class="table table-bordered table-sm text-center mb-2 daily-pallet-table">
+            <thead><tr>${head}</tr></thead>
+            <tbody><tr>${body}</tr></tbody>
+          </table>`;
+      }
+      document.getElementById('rptDailyPallets').innerHTML = html || '<span class="text-muted small">無資料</span>';
+    }
+  </script>
+</body>
+</html>

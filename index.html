@@ -1,0 +1,1129 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <base target="_top">
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>碼頭排程系統 - 客服預約與修改</title>
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+  <style>
+    body { background-color: #f8f9fa; padding: 20px; font-family: "Microsoft JhengHei", sans-serif; }
+    .card { border-radius: 12px; box-shadow: 0 4px 12px rgba(0,0,0,0.08); margin-bottom: 20px; }
+    .card-header { background-color: #0d6efd; color: white; border-radius: 12px 12px 0 0 !important; font-weight: bold; }
+    .required-asterisk { color: red; font-weight: bold; }
+    .hidden-field { display: none; }
+    .nav-tabs .nav-link.active { font-weight: bold; color: #0d6efd; }
+    .staff-chevron { position: absolute; right: 14px; top: 50%; width: 8px; height: 8px; border-right: 2px solid #666; border-bottom: 2px solid #666; transform: translateY(-70%) rotate(45deg); pointer-events: none; }
+    .staff-list { position: absolute; left: 0; right: 0; top: 100%; z-index: 1050; background: #fff; border: 1px solid #999; border-radius: 4px; box-shadow: 0 4px 12px rgba(0,0,0,0.15); }
+    .staff-item { padding: 6px 12px; cursor: pointer; }
+    .staff-item:hover { background: #0d6efd; color: #fff; }
+  </style>
+  <!-- Supabase 版：登入 + 後端功能（取代 Apps Script） -->
+  <script>window.DOCK_PAGE = 'index';</script>
+  <script src="js/config.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.min.js"></script>
+  <script src="js/auth.js"></script>
+  <script src="js/api.js"></script>
+</head>
+<body>
+
+<div class="container max-width-lg">
+  <!-- 功能分頁頁籤 -->
+  <ul class="nav nav-tabs mb-3" id="bookingTab" role="tablist">
+    <li class="nav-item" role="presentation">
+      <button class="nav-link active" id="create-tab" data-bs-toggle="tab" data-bs-target="#create-pane" type="button" onclick="switchMode('create')">📦 新增預約單</button>
+    </li>
+    <li class="nav-item" role="presentation">
+      <button class="nav-link" id="edit-tab" data-bs-toggle="tab" data-bs-target="#edit-pane" type="button" onclick="switchMode('edit')">🔍 查詢 / 修改既有預約</button>
+    </li>
+  </ul>
+
+  <div class="tab-content" id="bookingTabContent">
+
+    <!-- 新增預約單：以既有單號複製 -->
+    <div class="tab-pane fade show active mb-3" id="create-pane" role="tabpanel">
+      <div class="card bg-light">
+        <div class="card-body">
+          <div class="row g-2 align-items-center">
+            <div class="col-md-8">
+              <input type="text" class="form-control" id="copyKeyword" placeholder="請輸入要複製的「預約單號 (BK...)」或「車牌號碼」">
+            </div>
+            <div class="col-md-4">
+              <button type="button" class="btn btn-outline-primary w-100" onclick="performCopySearch()">📋 預約單複製</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 查詢/修改專用搜尋列 -->
+    <div class="tab-pane fade mb-3" id="edit-pane" role="tabpanel">
+      <div class="card bg-light">
+        <div class="card-body">
+          <div class="row g-2 align-items-center">
+            <div class="col-md-8">
+              <input type="text" class="form-control" id="searchKeyword" placeholder="請輸入「預約單號 (BK...)」或「車牌號碼」">
+            </div>
+            <div class="col-md-4">
+              <button type="button" class="btn btn-success w-100" onclick="performSearch()">搜尋單號並載入</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 主要預約表單卡片 -->
+    <div class="card">
+      <div class="card-header d-flex justify-content-between align-items-center">
+        <h4 class="mb-0" id="formTitle">📦 碼頭預約單輸入 (客服專用)</h4>
+        <span class="badge bg-warning text-dark hidden-field" id="editModeBadge">修改模式</span>
+      </div>
+      <div class="card-body">
+        <form id="bookingForm" onsubmit="handleFormSubmit(event)">
+          <input type="hidden" id="BookingId" value="">
+
+          <!-- 基本資料 -->
+          <h5 class="border-bottom pb-2 text-primary">基本資料</h5>
+          <div class="row g-3 mb-3">
+            <div class="col-md-3">
+              <label class="form-label">建單人員 <span class="required-asterisk">*</span></label>
+              <div class="position-relative" id="CreatedByWrap">
+                <input type="text" class="form-control" id="CreatedBy" required autocomplete="off" placeholder="-- 請選擇或輸入建單人員 --">
+                <span class="staff-chevron"></span>
+                <!-- 名單由 JS 自動載入 Google Sheet 的最新建單人員；一次全部展開，也可直接輸入其他名字 -->
+                <div id="CreatedByList" class="staff-list d-none"></div>
+              </div>
+            </div>
+            <div class="col-md-3">
+              <label class="form-label">作業類別 <span class="required-asterisk">*</span></label>
+              <div>
+                <div class="form-check form-check-inline">
+                  <input class="form-check-input" type="radio" name="OperationType" id="opIn" value="進貨" checked onchange="toggleFields()">
+                  <label class="form-check-label" for="opIn">進貨</label>
+                </div>
+                <div class="form-check form-check-inline">
+                  <input class="form-check-input" type="radio" name="OperationType" id="opOut" value="出貨" onchange="toggleFields()">
+                  <label class="form-check-label" for="opOut">出貨</label>
+                </div>
+              </div>
+            </div>
+            <div class="col-md-3">
+              <label class="form-label">稅務類別 <span class="required-asterisk">*</span></label>
+              <div>
+                <div class="form-check form-check-inline">
+                  <input class="form-check-input" type="radio" name="TaxType" id="taxBonded" value="保稅">
+                  <label class="form-check-label" for="taxBonded">保稅</label>
+                </div>
+                <div class="form-check form-check-inline">
+                  <input class="form-check-input" type="radio" name="TaxType" id="taxNonBonded" value="非保稅" checked>
+                  <label class="form-check-label" for="taxNonBonded">非保稅</label>
+                </div>
+              </div>
+            </div>
+            <div class="col-md-3">
+              <label class="form-label">優先等級 <span class="required-asterisk">*</span></label>
+              <div>
+                <div class="form-check form-check-inline">
+                  <input class="form-check-input" type="radio" name="Priority" id="pNormal" value="一般" checked onchange="handlePriorityChange()">
+                  <label class="form-check-label" for="pNormal">一般</label>
+                </div>
+                <div class="form-check form-check-inline">
+                  <input class="form-check-input" type="radio" name="Priority" id="pUrgent" value="急單" onchange="handlePriorityChange()">
+                  <label class="form-check-label text-danger font-weight-bold" for="pUrgent">⚡ 急單</label>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- 訂單與貨物資訊 -->
+          <h5 class="border-bottom pb-2 text-primary mt-4">訂單與貨物資訊</h5>
+          <div class="row g-3 mb-3">
+            <div class="col-md-6">
+              <label class="form-label">客戶名稱 <span class="required-asterisk">*</span></label>
+              <input type="text" class="form-control" id="CustomerName" required>
+            </div>
+            <div class="col-md-6">
+              <label class="form-label">貨物品名</label>
+              <input type="text" class="form-control" id="ProductName">
+            </div>
+            <div class="col-md-4">
+              <label class="form-label">數量 <span class="required-asterisk">*</span></label>
+              <input type="number" min="1" class="form-control" id="Quantity" required>
+            </div>
+           <div class="col-md-4">
+              <label class="form-label">包裝單位 <span class="required-asterisk">*</span></label>
+                 <select class="form-select" id="Unit" required>
+                  <!-- 將由 JS 自動載入 Google Sheet 的最新單位 -->
+                  </select>
+            </div>
+            <div class="col-md-4">
+              <label class="form-label">溫控條件 <span class="required-asterisk">*</span></label>
+              <input type="text" class="form-control" id="TempControl" list="tempOptions" required placeholder="選擇常用溫度或直接輸入" onclick="this.value='';" onfocus="this.click();">
+              <datalist id="tempOptions">
+                <option value="常溫">
+                <option value="0-5°C">
+                <option value="2-8°C">
+                <option value="22°C">
+                <option value="18-28°C">
+              </datalist>
+            </div>
+            <div class="col-md-12 hidden-field" id="originGroup">
+              <label class="form-label">出貨地 (僅出貨單需填)</label>
+              <input type="text" class="form-control" id="Origin" placeholder="例如：桃園一倉">
+            </div>
+          </div>
+
+          <!-- 運輸與時間排程 -->
+          <!-- 運輸與時間排程 -->
+          <h5 class="border-bottom pb-2 text-primary mt-4">運輸與時間排程</h5>
+          <div class="row g-3 mb-3">
+            <!-- 區塊對調：運輸商 / 車型 / 車牌號碼 置上 (非必填) -->
+            <div class="col-md-4">
+              <label class="form-label">運輸商</label>
+              <input type="text" class="form-control" id="Carrier">
+            </div>
+            <div class="col-md-4">
+              <label class="form-label">車型</label>
+              <select class="form-select" id="VehicleType" onchange="toggleFields(); refreshTimeSlotsAndDocks();">
+                <option value="箱式車">箱式車</option>
+                <option value="鷗翼車">鷗翼車</option>
+                <option value="貨櫃拖車">貨櫃拖車</option>
+              </select>
+            </div>
+            <div class="col-md-4">
+              <label class="form-label">車牌號碼</label>
+              <input type="text" class="form-control" id="PlateNumber">
+            </div>
+
+            <!-- 貨櫃專用連動欄位 -->
+            <div class="col-md-6 hidden-field" id="containerTypeGroup">
+              <label class="form-label">貨櫃櫃型</label>
+              <select class="form-select" id="ContainerType" onchange="refreshTimeSlotsAndDocks();">
+                <option value="20呎">20呎</option>
+                <option value="40呎">40呎</option>
+                <option value="槽車">槽車</option>
+              </select>
+            </div>
+            <div class="col-md-6 hidden-field" id="containerNumGroup">
+              <label class="form-label">貨櫃號碼</label>
+              <input type="text" class="form-control" id="ContainerNumber">
+            </div>
+
+            <!-- 區塊對調：預計抵達日期 / 預計抵達時段 / 指派碼頭 置下 -->
+            <div class="col-md-4">
+              <label class="form-label">預計抵達日期 <span class="required-asterisk">*</span></label>
+              <input type="date" class="form-control" id="ETA_Date" required onchange="validateSelectedDate(); refreshTimeSlotsAndDocks();">
+            </div>
+            <div class="col-md-4">
+              <label class="form-label">預計抵達時段 (半小時為單位) <span class="required-asterisk">*</span></label>
+              <select class="form-select" id="ETA_TimeSlot" required onchange="refreshAvailableDocks();">
+                <option value="" disabled selected>-- 請選擇時段 --</option>
+                <option value="07:00">07:00</option><option value="07:30">07:30</option>
+                <option value="08:00">08:00</option><option value="08:30">08:30</option>
+                <option value="09:00">09:00</option><option value="09:30">09:30</option>
+                <option value="10:00">10:00</option><option value="10:30">10:30</option>
+                <option value="11:00">11:00</option><option value="11:30">11:30</option>
+                <option value="13:00">13:00</option><option value="13:30">13:30</option>
+                <option value="14:00">14:00</option><option value="14:30">14:30</option>
+                <option value="15:00">15:00</option><option value="15:30">15:30</option>
+                <option value="16:00">16:00</option><option value="16:30">16:30</option>
+                <option value="17:00 以後">17:00 以後</option>
+              </select>
+            </div>
+            <div class="col-md-4">
+              <label class="form-label">指派碼頭 <span class="required-asterisk">*</span></label>
+              <select class="form-select" id="AssignedDock" required>
+                <!-- 動態載入 -->
+              </select>
+            </div>
+
+            <!-- 司機姓名與聯絡方式改為非必填 -->
+            <div class="col-md-6">
+              <label class="form-label">司機姓名</label>
+              <input type="text" class="form-control" id="DriverName">
+            </div>
+            <div class="col-md-6">
+              <label class="form-label">聯絡方式</label>
+              <input type="text" class="form-control" id="DriverPhone">
+            </div>
+            <div class="col-md-12">
+              <label class="form-label">其他備註</label>
+              <textarea class="form-control" id="Remarks" rows="2"></textarea>
+            </div>
+          </div>
+
+          <div class="d-flex justify-content-between align-items-center mt-4">
+            <button type="button" class="btn btn-danger hidden-field" id="cancelBookingBtn" onclick="handleCancelBooking()">🗑️ 取消 / 刪除此預約單</button>
+            <div class="ms-auto">
+              <button type="submit" class="btn btn-primary btn-lg px-5" id="submitBtn">提交預約單</button>
+            </div>
+          </div>
+        </form>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- 提交成功對話框 (可直接複製剛提交的預約單) -->
+<div class="modal fade" id="submitSuccessModal" tabindex="-1" data-bs-backdrop="static" data-bs-keyboard="false">
+  <div class="modal-dialog modal-dialog-centered">
+    <div class="modal-content">
+      <div class="modal-body">
+        <p class="mb-2" id="submitSuccessMsg"></p>
+        <p class="mb-0" id="submitSuccessNo"></p>
+      </div>
+      <div class="modal-footer justify-content-between">
+        <button type="button" class="btn btn-outline-primary" onclick="copyLastSubmitted()">📋 複製</button>
+        <button type="button" class="btn btn-dark px-4" data-bs-dismiss="modal">確定</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+<script>
+  let isEditMode = false;
+
+  // 前端一次性載入之資料快取 (Bookings 僅含 ETA_Date 今天及以後、未取消之單據)
+  let initData = null;
+
+  const ALL_SLOTS = [
+    "07:00","07:30","08:00","08:30","09:00","09:30","10:00","10:30",
+    "11:00","11:30","13:00","13:30","14:00","14:30","15:00","15:30","16:00","16:30","17:00 以後"
+  ];
+  // 單日總板數上限預設值；實際上限由 GAS 讀取 Config A2 後隨 initData.dailyPalletLimit 帶入
+  const DEFAULT_DAILY_PALLET_LIMIT = 200;
+
+  window.onload = function() {
+    setTomorrowAsDefaultDate();
+    handlePriorityChange();
+    toggleFields();
+
+    // 一次性載入 Google Sheet 資料，完成後若網址帶有 bookingId (由 Dashboard 連結) 則直接開啟修改
+    loadInitData(function() {
+      refreshTimeSlotsAndDocks();
+      openBookingFromUrlParam();
+    });
+  };
+
+  /**
+   * 本地時區日期字串 (YYYY-MM-DD)，避免 toISOString() 在台灣 08:00 前取到前一天
+   */
+  function toLocalDateStr(d) {
+    return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+  }
+
+  /**
+   * 一次性向 GAS 取得排程所需全部資料 (建單人員、單位、碼頭、鎖定規則、今天及以後的 Bookings)
+   */
+  function loadInitData(callback) {
+    const slotSelect = document.getElementById('ETA_TimeSlot');
+    slotSelect.disabled = true;
+
+    authRun()
+      .withSuccessHandler(function(res) {
+        initData = res;
+        populateStaffList(res.staffList);
+        populateUnitList(res.unitList);
+        slotSelect.disabled = false;
+        if (typeof callback === 'function') callback(true);
+        else refreshTimeSlotsAndDocks();
+      })
+      .withFailureHandler(function(err) {
+        console.error('載入排程資料失敗:', err);
+        populateStaffList([]);
+        populateUnitList([]);
+        slotSelect.disabled = false;
+        alert('❌ 載入排程資料失敗，請重新整理頁面：' + err.message);
+        if (typeof callback === 'function') callback(false);
+      })
+      .getIndexInitData();
+  }
+
+  /**
+   * 建單人員下拉選單 (保留目前已選值)
+   */
+  let staffNames = [];
+  function populateStaffList(staffList) {
+    const inputEl = document.getElementById('CreatedBy');
+    const listEl = document.getElementById('CreatedByList');
+    if (!inputEl || !listEl) return;
+    staffNames = (staffList && staffList.length > 0) ? staffList : ['張小明', '李大華', '王客服', '楊客服'];
+
+    // 自訂下拉：名單一次全部展開（不需捲動），點選填入；也可直接輸入其他名字
+    const render = function(showAll) {
+      const q = inputEl.value.trim().toLowerCase();
+      const items = showAll || !q ? staffNames : staffNames.filter(function(n) { return String(n).toLowerCase().includes(q); });
+      listEl.innerHTML = '';
+      items.forEach(function(name) {
+        const d = document.createElement('div');
+        d.className = 'staff-item';
+        d.textContent = name;
+        d.addEventListener('mousedown', function(e) { // mousedown 早於 blur，確保選取生效
+          e.preventDefault();
+          inputEl.value = name;
+          listEl.classList.add('d-none');
+          inputEl.dispatchEvent(new Event('change', { bubbles: true }));
+        });
+        listEl.appendChild(d);
+      });
+      listEl.classList.toggle('d-none', items.length === 0);
+    };
+
+    if (!inputEl.dataset.bound) {
+      inputEl.dataset.bound = '1';
+      inputEl.addEventListener('focus', function() { render(true); });
+      inputEl.addEventListener('click', function() { render(true); });
+      inputEl.addEventListener('input', function() { render(false); });
+      inputEl.addEventListener('blur', function() { listEl.classList.add('d-none'); });
+    }
+  }
+
+  /**
+   * 包裝單位下拉選單 (保留目前已選值)
+   */
+  function populateUnitList(unitList) {
+    const unitSelect = document.getElementById('Unit');
+    if (!unitSelect) return;
+    const prev = unitSelect.value;
+    unitSelect.innerHTML = '';
+    const units = (unitList && unitList.length > 0) ? unitList : ['板', '箱', '桶', '瓶', '車', '櫃'];
+
+    const defaultOpt = document.createElement('option');
+    defaultOpt.value = '';
+    defaultOpt.text = '-- 請選擇包裝單位 --';
+    defaultOpt.disabled = true;
+    defaultOpt.selected = true;
+    unitSelect.appendChild(defaultOpt);
+
+    units.forEach(function(unit) {
+      const opt = document.createElement('option');
+      opt.value = unit;
+      opt.text = unit;
+      unitSelect.appendChild(opt);
+    });
+    if (prev && units.includes(prev)) unitSelect.value = prev;
+  }
+
+  /**
+   * 切換頁籤外觀 (程式觸發時使用，不會觸發 onclick)
+   */
+  function activateTab(mode) {
+    const tabBtn = document.getElementById(mode === 'edit' ? 'edit-tab' : 'create-tab');
+    bootstrap.Tab.getOrCreateInstance(tabBtn).show();
+  }
+
+  /**
+   * 由 Dashboard「預約單修改」連結進入時 (?bookingId=BK...)，自動載入該單
+   */
+  function openBookingFromUrlParam() {
+    // Supabase 版：改用瀏覽器網址參數（原本是 google.script.url.getLocation）
+    const params = new URLSearchParams(location.search);
+    if (params.get('copyBookingId')) {
+      copyBookingFromId(params.get('copyBookingId'));
+      return;
+    }
+    const id = params.get('bookingId');
+    if (!id) return;
+    activateTab('edit');
+    document.getElementById('searchKeyword').value = id;
+    performSearch();
+  }
+
+  /**
+   * 取得一般單允許的最早日期 (16:00 前最快明天，16:00 後最快後天)
+   */
+  function getMinAllowedDateForNormal() {
+    const now = new Date();
+    const minDate = new Date();
+    if (now.getHours() < 16) {
+      minDate.setDate(minDate.getDate() + 1); // 16:00 前最快明天
+    } else {
+      minDate.setDate(minDate.getDate() + 2); // 16:00 後最快後天
+    }
+    return minDate;
+  }
+
+  /**
+   * 設定預設預約日期
+   */
+  function setTomorrowAsDefaultDate() {
+    const minDate = getMinAllowedDateForNormal();
+    document.getElementById('ETA_Date').value = toLocalDateStr(minDate);
+  }
+
+  /**
+   * 依優先等級與新增/修改模式設定日期欄位下限
+   */
+  function applyDateMin() {
+    const isUrgent = document.getElementById('pUrgent').checked;
+    const dateInput = document.getElementById('ETA_Date');
+    const todayStr = toLocalDateStr(new Date());
+
+    if (isUrgent || isEditMode) {
+      dateInput.min = todayStr; // 急單及修改單允許選今天
+    } else {
+      const minAllowed = getMinAllowedDateForNormal();
+      dateInput.min = toLocalDateStr(minAllowed); // 一般單限制：16:00前為明天，16:00後為後天
+    }
+  }
+
+  /**
+   * 急單/一般單切換時控制日期下限與校驗
+   */
+  function handlePriorityChange() {
+    applyDateMin();
+    validateSelectedDate();
+    refreshTimeSlotsAndDocks();
+  }
+
+  /**
+   * 驗證選擇之日期是否合規
+   */
+  function validateSelectedDate() {
+    const dateVal = document.getElementById('ETA_Date').value;
+    if (!dateVal) return;
+
+    const selectedDate = new Date(dateVal + 'T00:00:00');
+    const isUrgent = document.getElementById('pUrgent').checked;
+
+    if (isUrgent || isEditMode) {
+      const today = new Date();
+      today.setHours(0,0,0,0);
+      if (selectedDate < today) {
+        alert(isEditMode ? '⚠️ 修改單不可選擇過去的日期！已自動重設為今天。' : '⚠️ 急單不可選擇過去的日期！已自動重設為今天。');
+        document.getElementById('ETA_Date').value = toLocalDateStr(today);
+      }
+    } else {
+      const minAllowed = getMinAllowedDateForNormal();
+      minAllowed.setHours(0,0,0,0);
+      if (selectedDate < minAllowed) {
+        const minStr = toLocalDateStr(minAllowed);
+        const now = new Date();
+        if (now.getHours() >= 16) {
+          alert('⚠️ 下午 16:00 後，一般單最快僅開放預約後天 (' + minStr + ') 以後之車趟！');
+        } else {
+          alert('⚠️ 一般單最快僅開放預約明天 (' + minStr + ') 以後之車趟！');
+        }
+        document.getElementById('ETA_Date').value = minStr;
+      }
+    }
+  }
+
+  /**
+   * 控制連動欄位顯隱 (貨櫃櫃型、櫃號、出貨地)
+   */
+  function toggleFields() {
+    const vehicleType = document.getElementById('VehicleType').value;
+    const containerTypeGroup = document.getElementById('containerTypeGroup');
+    const containerNumGroup = document.getElementById('containerNumGroup');
+    
+    if (vehicleType === '貨櫃拖車') {
+      containerTypeGroup.classList.remove('hidden-field');
+      containerNumGroup.classList.remove('hidden-field');
+    } else {
+      containerTypeGroup.classList.add('hidden-field');
+      containerNumGroup.classList.add('hidden-field');
+    }
+
+    const opType = document.querySelector('input[name="OperationType"]:checked') ? document.querySelector('input[name="OperationType"]:checked').value : '進貨';
+    const originGroup = document.getElementById('originGroup');
+    if (originGroup) {
+      if (opType === '出貨') {
+        originGroup.classList.remove('hidden-field');
+      } else {
+        originGroup.classList.add('hidden-field');
+      }
+    }
+  }
+
+// 前端快取全天碼頭矩陣資料
+let dailyAvailabilityCache = {};
+
+/**
+ * 前端計算：一次性取得指定日期所有時段的可用碼頭矩陣
+ * (邏輯同 GAS getDailyAvailabilityMatrix，改由前端快取資料計算，不再呼叫 GAS)
+ */
+function computeDailyAvailabilityMatrix(targetDateStr, vehicleType, containerType, currentBookingId, priority) {
+  const allDocks = (initData && initData.dockList) ? initData.dockList : [];
+  const lockRules = (initData && initData.lockRules) ? initData.lockRules : [];
+  const bookings = (initData && initData.bookings) ? initData.bookings : [];
+
+  // 車型篩選基底碼頭清單
+  const isWing = (vehicleType === '鷗翼車');
+  const isTanker = (vehicleType === '貨櫃拖車' && containerType === '槽車');
+  const isStdContainer = (vehicleType === '貨櫃拖車' && (containerType === '20呎' || containerType === '40呎'));
+  const isBoxVehicle = (vehicleType === '箱式車');
+  const isUrgent = (priority === '急單');
+
+  let typeAllowedDocks = allDocks;
+  if (isWing) {
+    typeAllowedDocks = allDocks.filter(dock => dock.includes('6號'));
+  } else if (isTanker) {
+    typeAllowedDocks = allDocks.filter(dock => dock.includes('6號') || dock.includes('壓板'));
+  } else if (isBoxVehicle || isStdContainer) {
+    typeAllowedDocks = allDocks.filter(dock => {
+      if (isUrgent) {
+        return dock.includes('1號') || dock.includes('2號') || dock.includes('3號') || dock.includes('4號') || dock.includes('5號') || dock.includes('7號');
+      } else {
+        return dock.includes('1號') || dock.includes('2號') || dock.includes('3號') || dock.includes('4號') || dock.includes('5號');
+      }
+    });
+  }
+
+  // 建立鎖定與占用地圖
+  const lockedDocksBySlot = {};
+  const occupiedDocksBySlot = {};
+  ALL_SLOTS.forEach(slot => {
+    lockedDocksBySlot[slot] = new Set();
+    occupiedDocksBySlot[slot] = new Set();
+  });
+
+  // 整理鎖定規則
+  lockRules.forEach(rule => {
+    if (rule.lockDate === targetDateStr) {
+      ALL_SLOTS.forEach(slot => {
+        const isSlotMatch = (rule.lockTimeSlot === 'ALL' || rule.lockTimeSlot === '全天' || rule.lockTimeSlot === '全天鎖定' || rule.lockTimeSlot === slot);
+        if (isSlotMatch) {
+          if (rule.lockDock === 'ALL' || rule.lockDock === '全碼頭' || rule.lockDock === '全碼頭關閉') {
+            allDocks.forEach(d => lockedDocksBySlot[slot].add(d));
+          } else {
+            lockedDocksBySlot[slot].add(rule.lockDock);
+          }
+        }
+      });
+    }
+  });
+
+  // 整理占用資料 (快取內已排除「取消」單據)
+  bookings.forEach(b => {
+    if (currentBookingId && b.bookingId === currentBookingId) return;
+    if (b.etaDate !== targetDateStr) return;
+    if (occupiedDocksBySlot[b.etaTimeSlot]) {
+      occupiedDocksBySlot[b.etaTimeSlot].add(b.assignedDock);
+    }
+  });
+
+  // 計算每個時段的可用碼頭與額滿狀態
+  const resultMap = {};
+  ALL_SLOTS.forEach(slot => {
+    const availableDocks = typeAllowedDocks.filter(dock => !occupiedDocksBySlot[slot].has(dock) && !lockedDocksBySlot[slot].has(dock));
+    resultMap[slot] = {
+      isAvailable: availableDocks.length > 0,
+      docks: availableDocks
+    };
+  });
+
+  return resultMap;
+}
+
+/**
+ * 當日期、車型、櫃型變更時呼叫：由前端快取計算全天時段與碼頭狀態
+ */
+function refreshTimeSlotsAndDocks() {
+  const dateStr = document.getElementById('ETA_Date').value;
+  const vehicleType = document.getElementById('VehicleType').value;
+  const containerType = document.getElementById('ContainerType') ? document.getElementById('ContainerType').value : '';
+  const slotSelect = document.getElementById('ETA_TimeSlot');
+  const currentBookingId = document.getElementById('BookingId') ? document.getElementById('BookingId').value : '';
+  const priority = document.querySelector('input[name="Priority"]:checked') ? document.querySelector('input[name="Priority"]:checked').value : '一般';
+
+  if (!dateStr) return;
+
+  // 資料尚未載入完成時，維持載入狀態
+  if (!initData) {
+    slotSelect.disabled = true;
+    return;
+  }
+
+  const matrixMap = computeDailyAvailabilityMatrix(dateStr, vehicleType, containerType, currentBookingId, priority);
+  dailyAvailabilityCache = matrixMap;
+  slotSelect.disabled = false;
+
+  // 取得今天日期字串 (YYYY-MM-DD) 與當前時間 (HH:mm)
+  const now = new Date();
+  const todayStr = toLocalDateStr(now);
+  const currentHH = String(now.getHours()).padStart(2, '0');
+  const currentMM = String(now.getMinutes()).padStart(2, '0');
+  const currentTimeStr = `${currentHH}:${currentMM}`;
+
+  const isUrgent = document.getElementById('pUrgent') ? document.getElementById('pUrgent').checked : false;
+  const isToday = (dateStr === todayStr);
+
+  // 更新半小時時段下拉選單狀態
+  Array.from(slotSelect.options).forEach(opt => {
+    if (!opt.value) return;
+    const slotData = matrixMap[opt.value];
+    const rawText = opt.value;
+
+    // 如果是今天且為急單或修改單，檢查時段是否小於等於當前時間
+    if (isToday && (isUrgent || isEditMode) && opt.value <= currentTimeStr) {
+      opt.text = `${rawText} ⏰ (已過時)`;
+      opt.disabled = true;
+    } else if (slotData && slotData.isAvailable) {
+      opt.text = rawText;
+      opt.disabled = false;
+    } else {
+      opt.text = `${rawText} ⛔ (已額滿)`;
+      opt.disabled = true;
+    }
+  });
+
+  if (slotSelect.selectedOptions[0] && slotSelect.selectedOptions[0].disabled) {
+    slotSelect.value = '';
+  }
+
+  // 更新碼頭下拉選單（從快取讀取，瞬間完成）
+  refreshAvailableDocks();
+}
+
+  /**
+   * 重新載入可用碼頭選單 (純前端，保留原已選之碼頭)
+   */
+  function refreshAvailableDocks(forcedDock = null) {
+    const dockSelect = document.getElementById('AssignedDock');
+    const currentSelected = forcedDock || dockSelect.value;
+
+    updateDockOptions();
+
+    if (currentSelected && Array.from(dockSelect.options).some(o => o.value === currentSelected)) {
+      dockSelect.value = currentSelected;
+    }
+  }
+
+  function switchMode(mode) {
+    isEditMode = (mode === 'edit');
+    const title = document.getElementById('formTitle');
+    const badge = document.getElementById('editModeBadge');
+    const submitBtn = document.getElementById('submitBtn');
+    const cancelBtn = document.getElementById('cancelBookingBtn');
+
+    if (isEditMode) {
+      title.innerText = '✏️ 碼頭預約單修改 (客服專用)';
+      badge.classList.remove('hidden-field');
+      cancelBtn.classList.remove('hidden-field');
+      submitBtn.innerText = '儲存修改單據';
+      submitBtn.classList.replace('btn-primary', 'btn-warning');
+    } else {
+      title.innerText = '📦 碼頭預約單輸入 (客服專用)';
+      badge.classList.add('hidden-field');
+      cancelBtn.classList.add('hidden-field');
+      submitBtn.innerText = '提交預約單';
+      submitBtn.classList.replace('btn-warning', 'btn-primary');
+
+      document.getElementById('bookingForm').reset();
+      document.getElementById('BookingId').value = '';
+      if (document.getElementById('searchKeyword')) {
+        document.getElementById('searchKeyword').value = '';
+      }
+
+      setTomorrowAsDefaultDate();
+      applyDateMin();
+      document.getElementById('ETA_TimeSlot').value = '';
+      toggleFields();
+      refreshTimeSlotsAndDocks();
+    }
+  }
+
+  /**
+   * 於前端快取中以單號或車牌搜尋 (僅含今天及以後、未取消之單據)
+   */
+  function findBookingInCache(keyword) {
+    if (!initData || !initData.bookings) return null;
+    const kw = String(keyword).trim().toLowerCase();
+    return initData.bookings.find(b =>
+      b.bookingId.toLowerCase() === kw || String(b.plateNumber || '').trim().toLowerCase() === kw
+    ) || null;
+  }
+
+  function performSearch() {
+    const kw = document.getElementById('searchKeyword').value.trim();
+    if (!kw) {
+      alert('請輸入單號或車牌！');
+      return;
+    }
+
+    // 優先由前端快取搜尋；快取中找不到 (例如過去日期的單) 才回 GAS 查詢
+    const cached = findBookingInCache(kw);
+    if (cached) {
+      loadBookingIntoForm(cached);
+      return;
+    }
+
+    authRun().withSuccessHandler(function(res) {
+      if (!res || !res.success) {
+        alert('⚠️ ' + (res ? res.message : '查詢失敗，請重新整理頁面後再試'));
+        return;
+      }
+      loadBookingIntoForm(res.booking);
+    }).withFailureHandler(function(err) {
+      alert('❌ 查詢預約單失敗：' + (err && err.message ? err.message : err));
+    }).searchBookingForEdit(kw);
+  }
+
+  /**
+   * 將預約單資料帶入表單 (修改模式)
+   */
+  function loadBookingIntoForm(b) {
+    switchMode('edit');
+
+    document.getElementById('BookingId').value = b.bookingId;
+    document.getElementById('CreatedBy').value = b.createdBy || '';
+    document.getElementById('CustomerName').value = b.customerName || '';
+    document.getElementById('ProductName').value = b.productName || '';
+    document.getElementById('Quantity').value = b.quantity || 0;
+    document.getElementById('Unit').value = b.unit || '板';
+    document.getElementById('TempControl').value = b.tempControl || '';
+    document.getElementById('Carrier').value = b.carrier || '';
+    document.getElementById('VehicleType').value = b.vehicleType || '箱式車';
+    document.getElementById('PlateNumber').value = b.plateNumber || '';
+    document.getElementById('DriverName').value = b.driverName || '';
+    document.getElementById('DriverPhone').value = b.driverPhone || '';
+    document.getElementById('ETA_Date').value = b.etaDate;
+    document.getElementById('ETA_TimeSlot').value = b.etaTimeSlot;
+    document.getElementById('Origin').value = b.origin || '';
+
+    const isContainer = (b.vehicleType === '貨櫃拖車');
+    document.getElementById('ContainerType').value = isContainer ? (b.containerType || '20呎') : '';
+    document.getElementById('ContainerNumber').value = isContainer ? (b.containerNumber || '') : '';
+
+    document.getElementById('Remarks').value = b.remarks || '';
+
+    if (b.operationType === '出貨') document.getElementById('opOut').checked = true;
+    else document.getElementById('opIn').checked = true;
+
+    if (b.taxType === '保稅') document.getElementById('taxBonded').checked = true;
+    else document.getElementById('taxNonBonded').checked = true;
+
+    if (b.priority === '急單') document.getElementById('pUrgent').checked = true;
+    else document.getElementById('pNormal').checked = true;
+
+    applyDateMin();
+    toggleFields();
+    // 以前端快取重新計算時段 (排除本單自身占用)，並帶回原指派碼頭
+    refreshTimeSlotsAndDocks();
+    refreshAvailableDocks(b.assignedDock);
+
+    alert('✅ 單號 [' + b.bookingId + '] 載入成功！');
+  }
+
+  /**
+   * 由 Dashboard「預約單複製」進入 (?copyBookingId=BK...)：
+   * 以最新排程資料找到來源單 (今天以前的單據回 GAS 查詢)，帶入新增預約表單
+   */
+  function copyBookingFromId(sourceId) {
+    const cached = findBookingInCache(sourceId);
+    if (cached) {
+      applyCopyToCreateForm(cached);
+      return;
+    }
+    authRun().withSuccessHandler(function(res) {
+      if (!res || !res.success) {
+        alert('⚠️ 找不到要複製的預約單：' + (res ? res.message : sourceId));
+        return;
+      }
+      applyCopyToCreateForm(res.booking);
+    }).withFailureHandler(function(err) {
+      alert('❌ 查詢預約單失敗：' + (err && err.message ? err.message : err));
+    }).searchBookingForEdit(sourceId);
+  }
+
+  /**
+   * 新增預約單頁籤「預約單複製」：以單號或車牌找到來源單，直接帶入目前的新增表單
+   */
+  function performCopySearch() {
+    const kw = document.getElementById('copyKeyword').value.trim();
+    if (!kw) {
+      alert('請輸入要複製的單號或車牌！');
+      return;
+    }
+    copyBookingFromId(kw);
+  }
+
+  /**
+   * 移除備註中的系統自動紀錄 ([系統紀錄 ...]、[客服取消 ...])，只保留客服手動輸入的備註
+   * (系統紀錄以 " | " 附加於備註後方)
+   */
+  function stripSystemRemarks(remarks) {
+    return String(remarks || '')
+      .split(' | ')
+      .filter(function(seg) { return !/^\s*\[(系統紀錄|客服取消)[^\]]*\]/.test(seg); })
+      .join(' | ')
+      .trim();
+  }
+
+  /**
+   * 以來源單建立新預約：複製所有欄位，但不複製預計抵達時段與指派碼頭。
+   * 日期：來源單日期在目前規則下仍合規則沿用，否則使用新增預約單的預設日期。
+   */
+  function applyCopyToCreateForm(b) {
+    activateTab('create');
+    switchMode('create');
+
+    document.getElementById('CreatedBy').value = b.createdBy || '';
+    document.getElementById(b.operationType === '出貨' ? 'opOut' : 'opIn').checked = true;
+    document.getElementById(b.taxType === '保稅' ? 'taxBonded' : 'taxNonBonded').checked = true;
+    document.getElementById(b.priority === '急單' ? 'pUrgent' : 'pNormal').checked = true;
+    document.getElementById('CustomerName').value = b.customerName || '';
+    document.getElementById('ProductName').value = b.productName || '';
+    document.getElementById('Quantity').value = b.quantity || 0;
+    document.getElementById('Unit').value = b.unit || '板';
+    document.getElementById('TempControl').value = b.tempControl || '';
+    document.getElementById('Origin').value = b.origin || '';
+    document.getElementById('Carrier').value = b.carrier || '';
+    document.getElementById('VehicleType').value = b.vehicleType || '箱式車';
+    document.getElementById('PlateNumber').value = b.plateNumber || '';
+    const isContainer = (b.vehicleType === '貨櫃拖車');
+    document.getElementById('ContainerType').value = isContainer ? (b.containerType || '20呎') : '';
+    document.getElementById('ContainerNumber').value = isContainer ? (b.containerNumber || '') : '';
+    document.getElementById('DriverName').value = b.driverName || '';
+    document.getElementById('DriverPhone').value = b.driverPhone || '';
+    document.getElementById('Remarks').value = stripSystemRemarks(b.remarks);
+    document.getElementById('ETA_TimeSlot').value = '';
+
+    // 日期：依優先等級判斷來源日期目前是否合規 (急單 >= 今天；一般單 >= 最早可預約日)
+    const isUrgent = (b.priority === '急單');
+    const minDate = isUrgent ? toLocalDateStr(new Date()) : toLocalDateStr(getMinAllowedDateForNormal());
+    const dateOk = b.etaDate && String(b.etaDate) >= minDate;
+    if (dateOk) {
+      document.getElementById('ETA_Date').value = b.etaDate;
+    } else {
+      setTomorrowAsDefaultDate();
+    }
+
+    toggleFields();
+    // 設定日期下限並重新計算時段/碼頭 (來源單日期已確認合規，不會觸發自動重設提示)
+    handlePriorityChange();
+    // 急單且日期不合規時，預設日期改為今天
+    if (!dateOk && isUrgent) {
+      document.getElementById('ETA_Date').value = minDate;
+      refreshTimeSlotsAndDocks();
+    }
+
+    alert('📋 已複製單號 [' + b.bookingId + '] 的內容' + (dateOk ? '。' : '（原日期已不可預約，已改用預設日期）。') + '\n請重新選擇「預計抵達時段」與「指派碼頭」後提交。');
+  }
+
+/**
+ * 依選擇的時段更新碼頭選單（純前端記憶體讀取，無須再走 google.script.run）
+ */
+function updateDockOptions() {
+  const vehicleType = document.getElementById('VehicleType').value;
+  const containerType = document.getElementById('ContainerType') ? document.getElementById('ContainerType').value : '';
+  const slotStr = document.getElementById('ETA_TimeSlot').value;
+  const dockSelect = document.getElementById('AssignedDock');
+
+  if (!slotStr || !dailyAvailabilityCache[slotStr]) {
+    dockSelect.innerHTML = '<option value="">請先選擇日期與時段</option>';
+    return;
+  }
+
+  const availableDocks = dailyAvailabilityCache[slotStr].docks || [];
+  dockSelect.innerHTML = '';
+
+  const isStdContainer = (vehicleType === '貨櫃拖車' && (containerType === '20呎' || containerType === '40呎'));
+  const isBoxVehicle = (vehicleType === '箱式車');
+  const isUrgent = document.getElementById('pUrgent') ? document.getElementById('pUrgent').checked : false;
+
+  // 判斷是否滿足「急單 + (箱式車 或 貨櫃拖車20呎/40呎)」
+  const isUrgentEligible = isUrgent && (isBoxVehicle || isStdContainer);
+
+  // 1. 判斷 AUTO 選項
+  if (isBoxVehicle || isStdContainer) {
+    const autoOpt = document.createElement('option');
+    autoOpt.value = 'AUTO';
+    autoOpt.text = 'AUTO (系統自動指派)';
+    dockSelect.appendChild(autoOpt);
+  }
+
+  // 2. 填入可選擇碼頭 (若非滿足急單條件，過濾掉7號急單專用碼頭)
+  availableDocks.forEach(dock => {
+    if (!isUrgentEligible && dock.includes('7號')) {
+      return;
+    }
+    const opt = document.createElement('option');
+    opt.value = dock;
+    opt.text = dock;
+    dockSelect.appendChild(opt);
+  });
+
+  if (dockSelect.options.length === 0) {
+    const noOpt = document.createElement('option');
+    noOpt.value = '';
+    noOpt.text = '無可用碼頭';
+    dockSelect.appendChild(noOpt);
+  }
+}
+
+  /**
+   * 客服頁面刪單 (取消預約單)
+   */
+  function handleCancelBooking() {
+    const bookingId = document.getElementById('BookingId').value;
+    if (!bookingId) {
+      alert('⚠️ 未選擇任何預約單號！');
+      return;
+    }
+
+    if (confirm(`確定要取消預約單號 [${bookingId}] 嗎？取消後將釋放該碼頭與時段。`)) {
+      authRun().withSuccessHandler(function(res) {
+        if (res.success) {
+          alert('✅ ' + res.message);
+          switchMode('create');
+          loadInitData(); // 取消後重新載入最新排程資料
+        } else {
+          alert('⚠️ 取消失敗：' + res.message);
+        }
+      }).cancelBookingFromEdit(bookingId);
+    }
+  }
+
+  // 最近一次提交成功的單據 (供成功對話框「複製」使用) 與排程資料重新載入狀態
+  let lastSubmittedBooking = null;
+  let initDataReloading = false;
+  let afterReloadAction = null;
+
+  /**
+   * 提交成功後顯示對話框，並於背景重新載入最新排程資料
+   */
+  function showSubmitSuccess(message, bookingNo, formData) {
+    lastSubmittedBooking = {
+      bookingId: bookingNo || '',
+      createdBy: formData.CreatedBy,
+      operationType: formData.OperationType,
+      taxType: formData.TaxType,
+      priority: formData.Priority,
+      customerName: formData.CustomerName,
+      productName: formData.ProductName,
+      quantity: formData.Quantity,
+      unit: formData.Unit,
+      tempControl: formData.TempControl,
+      origin: formData.Origin,
+      carrier: formData.Carrier,
+      vehicleType: formData.VehicleType,
+      plateNumber: formData.PlateNumber,
+      containerType: formData.ContainerType,
+      containerNumber: formData.ContainerNumber,
+      etaDate: formData.ETA_Date,
+      driverName: formData.DriverName,
+      driverPhone: formData.DriverPhone,
+      remarks: formData.Remarks
+    };
+
+    document.getElementById('submitSuccessMsg').textContent = '✅ ' + message;
+    document.getElementById('submitSuccessNo').textContent = bookingNo ? '📄 預約單號：' + bookingNo : '';
+    bootstrap.Modal.getOrCreateInstance(document.getElementById('submitSuccessModal')).show();
+
+    initDataReloading = true;
+    loadInitData(function() {
+      refreshTimeSlotsAndDocks();
+      initDataReloading = false;
+      if (afterReloadAction) {
+        const fn = afterReloadAction;
+        afterReloadAction = null;
+        fn();
+      }
+    });
+  }
+
+  /**
+   * 成功對話框「複製」：關閉對話框後，於目前頁面帶入剛提交的單據內容
+   * (等最新排程資料載入完成，確保時段/碼頭已扣除剛提交的這張單)
+   */
+  function copyLastSubmitted() {
+    if (!lastSubmittedBooking) return;
+    const modalEl = document.getElementById('submitSuccessModal');
+    const source = lastSubmittedBooking;
+    modalEl.addEventListener('hidden.bs.modal', function() {
+      const run = function() { applyCopyToCreateForm(source); };
+      if (initDataReloading) afterReloadAction = run;
+      else run();
+    }, { once: true });
+    bootstrap.Modal.getOrCreateInstance(modalEl).hide();
+  }
+
+  function handleFormSubmit(e) {
+    e.preventDefault();
+
+    const assignedDock = document.getElementById('AssignedDock').value;
+    if (!assignedDock) {
+      alert('⚠️ 目前選擇的日期、時段或車型無可用碼頭，請調整後再試！');
+      return;
+    }
+
+    // 前端預先檢核：一般「新增」單單日總板數上限 (修改單豁免；最終仍由 GAS 於寫入時再驗證一次，避免多人同時預約衝突)
+    const priorityVal = document.querySelector('input[name="Priority"]:checked').value;
+    if (priorityVal !== '急單' && !isEditMode && initData) {
+      const DAILY_PALLET_LIMIT = Number(initData.dailyPalletLimit) || DEFAULT_DAILY_PALLET_LIMIT;
+      const dateVal = document.getElementById('ETA_Date').value;
+      const currentId = document.getElementById('BookingId').value;
+      const weights = initData.unitWeights || {};
+      const unitVal = document.getElementById('Unit').value;
+      const qtyVal = Number(document.getElementById('Quantity').value) || 0;
+      const inputPallets = qtyVal > 0 ? Math.ceil(qtyVal * (weights[unitVal] !== undefined ? weights[unitVal] : 1.0)) : 0;
+      const dailySum = initData.bookings
+        .filter(b => b.etaDate === dateVal && b.bookingId !== currentId)
+        .reduce((sum, b) => sum + (Number(b.convertedPallets) || 0), 0);
+      if (dailySum + inputPallets > DAILY_PALLET_LIMIT) {
+        alert(`⚠️ 預約貨量已達單日上限！當日已排 ${dailySum} 板，本單 ${inputPallets} 板，超過上限 ${DAILY_PALLET_LIMIT} 板。`);
+        return;
+      }
+    }
+    
+    const btn = document.getElementById('submitBtn');
+    btn.disabled = true;
+    btn.innerText = '系統驗證與登錄中...';
+
+    const vehicleType = document.getElementById('VehicleType').value;
+    const isContainer = (vehicleType === '貨櫃拖車');
+
+    const formData = {
+      bookingId: document.getElementById('BookingId').value,
+      isNewBooking: !isEditMode,
+      CreatedBy: document.getElementById('CreatedBy').value,
+      OperationType: document.querySelector('input[name="OperationType"]:checked').value,
+      TaxType: document.querySelector('input[name="TaxType"]:checked').value,
+      Priority: document.querySelector('input[name="Priority"]:checked').value,
+      CustomerName: document.getElementById('CustomerName').value,
+      ProductName: document.getElementById('ProductName').value,
+      Quantity: Number(document.getElementById('Quantity').value),
+      Unit: document.getElementById('Unit').value,
+      TempControl: document.getElementById('TempControl').value,
+      Origin: document.getElementById('Origin').value,
+      Carrier: document.getElementById('Carrier').value,
+      VehicleType: vehicleType,
+      PlateNumber: document.getElementById('PlateNumber').value,
+      ContainerType: isContainer ? document.getElementById('ContainerType').value : '',
+      ContainerNumber: isContainer ? document.getElementById('ContainerNumber').value : '',
+      ETA_Date: document.getElementById('ETA_Date').value,
+      ETA_TimeSlot: document.getElementById('ETA_TimeSlot').value,
+      AssignedDock: document.getElementById('AssignedDock').value,
+      DriverName: document.getElementById('DriverName').value,
+      DriverPhone: document.getElementById('DriverPhone').value,
+      Remarks: document.getElementById('Remarks').value
+    };
+
+    const targetFunction = isEditMode ? 'updateBookingSubmission' : 'processBookingSubmission';
+
+    authRun()
+      .withSuccessHandler(function(response) {
+        btn.disabled = false;
+        btn.innerText = isEditMode ? '儲存修改單據' : '提交預約單';
+        if(response.success) {
+          const bookingNo = response.bookingId || formData.bookingId;
+          if (isEditMode) activateTab('create');
+          switchMode('create');
+          document.getElementById('copyKeyword').value = '';
+          showSubmitSuccess(response.message, bookingNo, formData); // 顯示成功對話框並重新載入最新排程資料
+        } else {
+          alert('⚠️ 驗證失敗 (規則阻擋)：\n' + response.message);
+        }
+      })
+      .withFailureHandler(function(err) {
+        btn.disabled = false;
+        btn.innerText = isEditMode ? '儲存修改單據' : '提交預約單';
+        alert('❌ 系統錯誤：' + err.message);
+      })[targetFunction](formData);
+  }
+</script>
+</body>
+</html>

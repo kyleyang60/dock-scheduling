@@ -1,0 +1,294 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+  <base target="_top">
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>碼頭排程系統 - 警衛室管制台</title>
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.10.0/font/bootstrap-icons.css" rel="stylesheet">
+<style>
+    body { background-color: #f1f5f9; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+    .search-box { background-color: #ffffff; border-radius: 12px; padding: 15px 20px; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.05); }
+    .plate-input { font-size: 1.6rem; font-weight: bold; letter-spacing: 2px; text-transform: uppercase; text-align: center; }
+    .card-vehicle { border-left: 6px solid #0d6efd; border-radius: 10px; }
+    .dock-status-container { background-color: #ffffff; border-radius: 12px; padding: 15px; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.05); }
+    .dock-badge { font-size: 0.85rem; padding: 6px 12px; border-radius: 20px; }
+    
+    /* 按鈕點擊時的轉圈動畫 */
+    @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+    .spin-icon { display: inline-block; animation: spin 1s linear infinite; }
+  </style>
+  <!-- Supabase 版：登入 + 後端功能（取代 Apps Script） -->
+  <script>window.DOCK_PAGE = 'gatekeeper';</script>
+  <script src="js/config.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.min.js"></script>
+  <script src="js/auth.js"></script>
+  <script src="js/api.js"></script>
+</head>
+<body>
+
+  <nav class="navbar navbar-dark bg-primary mb-3">
+    <div class="container-fluid px-4">
+      <a class="navbar-brand fw-bold" href="#"><i class="bi bi-shield-check me-2"></i>警衛室門禁管制與簽到系統</a>
+      <span class="navbar-text text-white" id="currentDate">--</span>
+    </div>
+  </nav>
+
+  <div class="container px-4">
+    
+<!-- 新增：碼頭即時使用狀態 (依 MasterData 動態顯示) -->
+    <div class="dock-status-container mb-3">
+      <div class="d-flex justify-content-between align-items-center mb-2">
+        <h6 class="fw-bold text-secondary m-0"><i class="bi bi-p-square me-2"></i>碼頭即時使用狀態</h6>
+        <div class="d-flex align-items-center gap-3">
+          <span class="small text-muted" id="availableDockCount">計算中...</span>
+          <button class="btn btn-sm btn-outline-primary fw-bold px-2 py-1 d-flex align-items-center gap-1" id="refreshBtn" onclick="manualRefresh()">
+            <i class="bi bi-arrow-clockwise" id="refreshIcon"></i> 重新整理
+          </button>
+        </div>
+      </div>
+      <div class="d-flex flex-wrap gap-2" id="dockStatusContainer">
+        <div class="text-muted small py-1">載入碼頭狀態中...</div>
+      </div>
+    </div>
+
+    <!-- 車牌快速搜尋區域 -->
+    <div class="search-box mb-3">
+      <label class="form-label fw-bold text-secondary mb-1"><i class="bi bi-search me-1"></i>到場車牌 / 客戶快速搜尋</label>
+      <div class="input-group input-group-lg">
+        <input type="text" id="searchInput" class="form-control plate-input" placeholder="輸入車牌 (例如: AFG-3733)" onkeyup="filterVehicleCards()">
+        <button class="btn btn-outline-secondary" type="button" onclick="resetSearch()"><i class="bi bi-x-lg"></i> 清除</button>
+      </div>
+    </div>
+
+    <!-- 車輛動態清單區 -->
+    <h5 class="fw-bold mb-3 text-secondary"><i class="bi bi-truck me-2"></i>今日預計到廠車輛清單 (依 ETA 時間排序)</h5>
+    <div class="row g-3" id="vehicleCardsContainer">
+      <div class="text-center py-5 text-muted">載入今日預約資料中...</div>
+    </div>
+  </div>
+
+  <script>
+    // 以原始包裝單位數量顯示 (不換算板數) 的單位
+    const RAW_QTY_UNITS = ['車', '櫃', '鋼瓶', '槽車', 'Y鋼瓶'];
+    let allBookings = [];
+
+    document.addEventListener('DOMContentLoaded', () => {
+      document.getElementById('currentDate').innerText = new Date().toLocaleDateString('zh-TW');
+      
+      // 1. 初次載入資料
+      loadGatekeeperData();
+
+      // 2. 自動刷新（同 Dashboard）
+      setupAutoRefresh();
+    });
+
+    // ===== 自動刷新：僅 07:00~18:00（台北時間）、且分頁可見時，每 60 秒一次 =====
+    const AUTO_START_HOUR = 7, AUTO_END_HOUR = 18, AUTO_INTERVAL_MS = 60000;
+    const FULL_RELOAD_MS = 5 * 60 * 1000; // 保險：即使版本沒變，最久 5 分鐘也完整重抓一次
+    let lastLoadTime = 0;
+    let lastToken = '';        // 目前畫面資料對應的伺服器資料標記
+    let lastFullLoadTime = 0;  // 上次成功完整載入資料的時間
+
+    function isAutoRefreshWindow() {
+      const h = Number(new Intl.DateTimeFormat('en-GB', { timeZone: 'Asia/Taipei', hour: '2-digit', hour12: false }).format(new Date()));
+      return h >= AUTO_START_HOUR && h < AUTO_END_HOUR;
+    }
+
+    // 時段內、分頁可見、搜尋框為空、且距上次更新已超過 60 秒才更新
+    function autoRefreshIfNeeded() {
+      if (document.hidden || !isAutoRefreshWindow()) return;
+      if (Date.now() - lastLoadTime < AUTO_INTERVAL_MS) return;
+      if (document.getElementById('searchInput').value.trim() !== '') return;
+      checkForUpdate();
+    }
+
+    // 輕量檢查：只問伺服器「資料標記」（不讀 Sheet）；標記改變、或超過保險時間才完整重抓
+    function checkForUpdate() {
+      lastLoadTime = Date.now();
+      authRun()
+        .withSuccessHandler(info => {
+          if (!info || info.token !== lastToken || Date.now() - lastFullLoadTime > FULL_RELOAD_MS) {
+            loadGatekeeperData();
+          }
+        })
+        .withFailureHandler(() => { lastLoadTime = 0; }) // 失敗不算已檢查，下次立刻重試
+        .getDataVersion();
+    }
+
+    function setupAutoRefresh() {
+      setInterval(autoRefreshIfNeeded, 15000); // 每 15 秒檢查；實際刷新間隔仍受 60 秒限制
+      document.addEventListener('visibilitychange', autoRefreshIfNeeded); // 切回此分頁
+      window.addEventListener('focus', autoRefreshIfNeeded);
+      ['mousemove', 'keydown', 'touchstart', 'click'].forEach(ev =>
+        document.addEventListener(ev, autoRefreshIfNeeded, { passive: true }));
+    }
+
+function loadGatekeeperData(onCompleteCallback, forceFresh) {
+      lastLoadTime = Date.now(); // 先記錄，避免請求未回來前被重複觸發
+      authRun()
+        .withSuccessHandler(res => {
+          if (res.success) {
+            lastToken = res.dataToken || '';
+            lastFullLoadTime = Date.now();
+            allBookings = res.bookings;
+            
+            // 渲染碼頭狀態
+            renderDockStatus(res.dockStatus || []);
+
+            // 渲染車輛清單
+            const query = document.getElementById('searchInput').value.trim().toUpperCase();
+            if (query !== '') {
+              filterVehicleCards();
+            } else {
+              renderVehicleCards(allBookings);
+            }
+          }
+          if (typeof onCompleteCallback === 'function') {
+            onCompleteCallback();
+          }
+        })
+        .withFailureHandler(err => {
+          if (typeof onCompleteCallback === 'function') {
+            onCompleteCallback();
+          }
+        })
+        .getGatekeeperDashboardData(!!forceFresh);
+    }
+
+    // 新增：手動刷新按鈕點擊觸發函式
+    function manualRefresh() {
+      const btn = document.getElementById('refreshBtn');
+      const icon = document.getElementById('refreshIcon');
+      
+      // 禁用按鈕並加上圖示旋轉效果
+      btn.disabled = true;
+      icon.classList.add('spin-icon');
+
+      loadGatekeeperData(() => {
+        // 資料讀取完畢後恢復按鈕狀態
+        btn.disabled = false;
+        icon.classList.remove('spin-icon');
+      }, true); // 手動更新：略過伺服器快取
+    }
+
+    // 渲染碼頭即時狀態資訊
+    function renderDockStatus(dockStatus) {
+      const container = document.getElementById('dockStatusContainer');
+      const countEl = document.getElementById('availableDockCount');
+      container.innerHTML = '';
+
+      if (dockStatus.length === 0) {
+        container.innerHTML = '<span class="text-muted small">無碼頭資料</span>';
+        countEl.innerText = '';
+        return;
+      }
+
+      let availableCount = 0;
+      dockStatus.forEach(d => {
+        if (d.isAvailable) availableCount++;
+
+        const bgClass = d.isAvailable ? 'bg-success' : 'bg-danger';
+        const iconClass = d.isAvailable ? 'bi-check-circle-fill' : 'bi-x-circle-fill';
+        
+        container.innerHTML += `
+          <span class="badge ${bgClass} dock-badge d-flex align-items-center gap-1">
+            <i class="bi ${iconClass}"></i> ${d.dockName} (${d.statusText})
+          </span>
+        `;
+      });
+
+      countEl.innerText = `空碼頭: ${availableCount} / 總碼頭: ${dockStatus.length}`;
+    }
+
+    function renderVehicleCards(list) {
+      const container = document.getElementById('vehicleCardsContainer');
+      container.innerHTML = '';
+
+      if (list.length === 0) {
+        container.innerHTML = '<div class="text-center py-5 text-muted">無符合條件之預約車輛</div>';
+        return;
+      }
+
+      list.forEach(b => {
+        let actionBtnHTML = '';
+
+        // 狀態按鈕精簡文字修正
+        // 1. 預約中 / 已核准 -> 簽到
+        if (b.status === '預約中' || b.status === '已核准') {
+          actionBtnHTML = `<button class="btn btn-success btn-lg w-100 fw-bold" onclick="updateStatus('${b.bookingId}', '已到廠')"><i class="bi bi-box-arrow-in-right me-1"></i>簽到</button>`;
+        } 
+        // 2. 已到廠 / 作業中 -> 作業中 (禁用)
+        else if (b.status === '已到廠' || b.status === '作業中') {
+          actionBtnHTML = `<button class="btn btn-secondary btn-lg w-100 fw-bold" disabled><i class="bi bi-clock-history me-1"></i>作業中</button>`;
+        } 
+        // 3. 已完成 -> 放行
+        else if (b.status === '已完成') {
+          actionBtnHTML = `<button class="btn btn-primary btn-lg w-100 fw-bold" onclick="updateStatus('${b.bookingId}', '已放行離廠')"><i class="bi bi-check-circle-fill me-1"></i>放行</button>`;
+        } 
+        // 4. 已放行離廠 -> 離廠 (禁用)
+        else {
+          actionBtnHTML = `<button class="btn btn-secondary btn-lg w-100" disabled><i class="bi bi-check-all me-1"></i>離廠</button>`;
+        }
+
+        // 貨量顯示 format：顯示 1.正確貨量 與 2.換算板數
+        const qtyDisplay = `${b.quantity} ${b.unit || ''}`;
+        const palletDisplay = RAW_QTY_UNITS.includes(String(b.unit || '').trim()) ? '' : ` (${b.convertedPallets} 板)`;
+
+// 組合第一列：車牌號碼 + 運輸商
+        const headerText = `${b.plateNumber}${b.carrier ? ' ' + b.carrier : ''}`;
+
+        // 組合第二列：客戶 - 出貨地(保稅) -> 僅當 taxType === '保稅' 時才加上 (保稅)
+        const isTaxBonded = (b.taxType === '保稅');
+        const bondedTag = isTaxBonded ? ' (保稅)' : '';
+        const originText = b.origin ? ` - ${b.origin}` : '';
+        const line2Text = `${b.customerName}${originText}${bondedTag}`;
+
+        container.innerHTML += `
+          <div class="col-md-6 col-lg-4">
+            <div class="card card-vehicle shadow-sm p-3 bg-white">
+              <div class="d-flex justify-content-between align-items-center mb-2">
+                <span class="fs-4 fw-bold text-primary">${headerText}</span>
+                <span class="badge bg-dark fs-6">${b.etaTimeSlot}</span>
+              </div>
+              <div class="mb-2">
+                <div class="fw-bold fs-6 text-dark">${line2Text}</div>
+                <div class="small text-muted">${b.vehicleType} / 司機: ${b.driverName || '未提供'} / 電話: ${b.driverPhone || '無電話'}</div>
+                <div class="small text-muted">碼頭: <strong class="text-danger">${b.assignedDock}</strong> / 貨量: ${qtyDisplay}${palletDisplay}</div>
+              </div>
+              <div class="mt-2">
+                ${actionBtnHTML}
+              </div>
+            </div>
+          </div>
+        `;
+      });
+    }
+
+    function filterVehicleCards() {
+      const query = document.getElementById('searchInput').value.trim().toUpperCase();
+      const filtered = allBookings.filter(b => 
+        (b.plateNumber && b.plateNumber.toUpperCase().includes(query)) || 
+        (b.customerName && b.customerName.toUpperCase().includes(query)) ||
+        (b.carrier && b.carrier.toUpperCase().includes(query))
+      );
+      renderVehicleCards(filtered);
+    }
+
+    function resetSearch() {
+      document.getElementById('searchInput').value = '';
+      renderVehicleCards(allBookings);
+    }
+
+    function updateStatus(bookingId, status) {
+      authRun()
+        .withSuccessHandler(res => {
+          alert(res.message);
+          loadGatekeeperData();
+        })
+        .updateVehicleGateStatus(bookingId, status);
+    }
+  </script>
+</body>
+</html>

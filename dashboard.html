@@ -1,0 +1,485 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+  <base target="_top">
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>碼頭排程系統 - 現場動態看板</title>
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.10.0/font/bootstrap-icons.css" rel="stylesheet">
+  <style>
+    body { background-color: #121212; color: #e0e0e0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+    .navbar { background-color: #1f1f1f !important; border-bottom: 1px solid #333; }
+    .card-dark { background-color: #1e1e1e; border: 1px solid #333; border-radius: 8px; }
+    
+    /* 網格看板核心樣式 */
+    .dashboard-table-wrapper { overflow-x: auto; background-color: #181818; border-radius: 8px; border: 1px solid #333; }
+    .dashboard-table { width: 100%; border-collapse: separate; border-spacing: 0; text-align: center; }
+    .dashboard-table th, .dashboard-table td { border: 1px solid #2a2a2a; padding: 6px; vertical-align: middle; min-width: 110px; }
+    .dashboard-table th { background-color: #252525; color: #aaa; font-weight: 600; font-size: 0.85rem; position: sticky; top: 0; z-index: 10; }
+    .dock-header-col { background-color: #222 !important; color: #4dabf7 !important; font-weight: bold; width: 130px; min-width: 130px; position: sticky; left: 0; z-index: 11; text-align: left; padding-left: 12px !important; }
+    
+    /* 預約排程框卡片樣式 */
+    .booking-card {
+      border-radius: 6px;
+      padding: 6px;
+      font-size: 0.8rem;
+      text-align: left;
+      cursor: pointer;
+      transition: transform 0.15s ease, box-shadow 0.15s ease;
+      position: relative;
+      overflow: hidden;
+      box-shadow: 0 2px 5px rgba(0,0,0,0.3);
+    }
+    .booking-card:hover { transform: translateY(-2px); box-shadow: 0 4px 10px rgba(0,0,0,0.5); z-index: 5; }
+    
+    /* 作業類別顏色 (進貨:藍 / 出貨:綠) */
+    .op-in { background-color: #0d47a1; border-left: 4px solid #42a5f5; color: #ffffff; }
+    .op-out { background-color: #1b5e20; border-left: 4px solid #66bb6a; color: #ffffff; }
+    
+    /* 急單警示閃爍邊框 */
+    .priority-urgent { border: 2px solid #ff5252 !important; animation: urgent-glow 1.5s infinite alternate; }
+    @keyframes urgent-glow { from { box-shadow: 0 0 2px #ff5252; } to { box-shadow: 0 0 8px #ff5252; } }
+
+    /* 逾期標示 */
+    .is-overdue { background-color: #b71c1c !important; border-left: 4px solid #ff1744 !important; }
+    .status-completed { background-color: #374151 !important; border-left-color: #6b7280 !important; opacity: 0.75; }
+    /* 狀態 Badge */
+    .status-badge { font-size: 0.7rem; padding: 2px 5px; border-radius: 4px; display: inline-block; font-weight: bold; }
+    .st-預約中 { background-color: #424242; color: #eee; }
+    .st-已核准 { background-color: #1565c0; color: #fff; }
+    .st-簽到 { background-color: #f57f17; color: #000; }
+    .st-作業中 { background-color: #00838f; color: #fff; }
+    .st-放行 { background-color: #ad1457; color: #fff; }
+    .st-已完成, .st-離廠 { background-color: #2e7d32; color: #fff; }
+
+    .time-filter-btn.active { background-color: #0d6efd !important; color: white !important; }
+
+    /* 按鈕點擊時的轉圈動畫 (同 Gatekeeper) */
+    @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+    .spin-icon { display: inline-block; animation: spin 1s linear infinite; }
+  </style>
+  <!-- Supabase 版：登入 + 後端功能（取代 Apps Script） -->
+  <script>window.DOCK_PAGE = 'dashboard';</script>
+  <script src="js/config.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.min.js"></script>
+  <script src="js/auth.js"></script>
+  <script src="js/api.js"></script>
+</head>
+<body>
+
+  <!-- 上方導航列 -->
+  <nav class="navbar navbar-expand-lg navbar-dark px-3">
+    <div class="container-fluid">
+      <a class="navbar-brand fw-bold" href="#"><i class="bi bi-speedometer2 text-primary me-2"></i>碼頭現場動態看板</a>
+      <div class="d-flex align-items-center gap-3">
+        <!-- 查詢日期選擇 -->
+        <input type="date" id="dashDate" class="form-control form-control-sm bg-dark text-light border-secondary" onchange="loadDashboard()">
+        
+        <!-- 時段篩選與更新按鈕 -->
+        <div class="btn-group btn-group-sm" role="group">
+          <button type="button" class="btn btn-outline-secondary text-light time-filter-btn active" id="btn-all" onclick="setTimeFilter('all')">全天</button>
+          <button type="button" class="btn btn-outline-secondary text-light time-filter-btn" id="btn-am" onclick="setTimeFilter('am')">上午</button>
+          <button type="button" class="btn btn-outline-secondary text-light time-filter-btn" id="btn-pm" onclick="setTimeFilter('pm')">下午</button>
+        </div>
+        
+        <!-- 功能需求：手動刷新按鍵 -->
+        <button type="button" class="btn btn-primary btn-sm" id="refreshBtn" onclick="manualRefresh()"><i class="bi bi-arrow-clockwise me-1" id="refreshIcon"></i>更新</button>
+
+        <span class="badge bg-secondary" id="currentTimeDisplay">--:--</span>
+      </div>
+    </div>
+  </nav>
+
+  <div class="container-fluid p-3">
+    <!-- 值班人員與資訊欄 -->
+    <div class="row g-2 mb-3">
+      <div class="col-md-6">
+        <div class="card-dark p-2 d-flex justify-content-around align-items-center small">
+          <div><i class="bi bi-person-badge text-info me-1"></i>現場值班：<strong id="whStaffDisplay" class="text-white">載入中...</strong></div>
+          <div class="vr bg-secondary"></div>
+          <div><i class="bi bi-headset text-success me-1"></i>客服值班：<strong id="csStaffDisplay" class="text-white">載入中...</strong></div>
+        </div>
+      </div>
+      <div class="col-md-6">
+        <div class="card-dark p-2 text-end small text-muted" id="overdueAlertBox">
+          <i class="bi bi-check-circle text-success me-1"></i>目前無逾期未到的預約車輛
+        </div>
+      </div>
+    </div>
+
+    <!-- 動態碼頭網格看板 -->
+    <div class="dashboard-table-wrapper">
+      <table class="dashboard-table">
+        <thead>
+          <tr id="timeSlotHeaderRow">
+            <th class="dock-header-col">碼頭 / 時段</th>
+            <!-- 時段由 JS 動態渲染 -->
+          </tr>
+        </thead>
+        <tbody id="dockGridBody">
+          <tr><td colspan="20" class="py-5 text-muted">資料載入中...</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- 快速操作展示 Modal (包含要求補全之所有欄位) -->
+  <div class="modal fade" id="detailModal" tabindex="-1">
+    <div class="modal-dialog">
+      <div class="modal-content bg-dark text-light border-secondary">
+        <div class="modal-header border-secondary">
+          <h5 class="modal-title fw-bold" id="modalBookingId">單號詳情</h5>
+          <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+        </div>
+       <div class="modal-body fs-6">
+          <div class="row g-2">
+            <div class="col-6"><strong>客戶名稱：</strong><span id="mCustomer"></span></div>
+            <div class="col-6"><strong>作業類別：</strong><span id="mOpType"></span></div>
+            
+            <!-- 【新增區塊】出貨地 (預設隱藏，若為出貨單則顯示) -->
+            <div class="col-12" id="mOriginBox" style="display: none;">
+              <strong>出貨地：</strong><span id="mOrigin" class="text-warning fw-bold"></span>
+            </div>
+
+            <!-- 貨物品名、溫控條件 -->
+            <div class="col-6"><strong>貨物品名：</strong><span id="mProduct" class="text-warning"></span></div>
+            <div class="col-6"><strong>溫控條件：</strong><span id="mTemp" class="text-info"></span></div>
+
+            <div class="col-6"><strong>預計板數：</strong><span id="mPallets" class="fw-bold text-success"></span></div>
+            <div class="col-6"><strong>指派碼頭：</strong><span id="mDock"></span></div>
+
+            <div class="col-6"><strong>運輸公司：</strong><span id="mCarrier"></span></div>
+            <div class="col-6"><strong>車型 / 車號：</strong><span id="mVehicle"></span></div>
+            
+            <!-- 新增需求欄位：貨櫃櫃型、貨櫃號碼 -->
+            <div class="col-6"><strong>貨櫃櫃型：</strong><span id="mContainerType"></span></div>
+            <div class="col-6"><strong>貨櫃號碼：</strong><span id="mContainerNumber"></span></div>
+
+            <div class="col-6"><strong>司機姓名：</strong><span id="mDriver"></span></div>
+            <div class="col-6"><strong>司機電話：</strong><span id="mPhone"></span></div>
+            
+            <!-- 新增需求欄位：其他備註 -->
+            <div class="col-12 mt-2">
+              <strong>其他備註：</strong>
+              <div id="mRemarks" class="p-2 mt-1 bg-secondary bg-opacity-25 rounded border border-secondary text-light small"></div>
+            </div>
+          </div>
+        </div>
+        <div class="modal-footer border-secondary d-block">
+          <!-- 第一列：狀態操作 -->
+          <div class="row g-2 mb-2">
+            <div class="col-6">
+              <button type="button" class="btn btn-warning w-100" onclick="updateStatusFromModal('作業中')">
+                <i class="bi bi-play-circle me-1"></i>標記為作業中
+              </button>
+            </div>
+            <div class="col-6">
+              <button type="button" class="btn btn-success w-100" onclick="updateStatusFromModal('已完成')">
+                <i class="bi bi-check-circle me-1"></i>標記為完成
+              </button>
+            </div>
+          </div>
+          <!-- 第二列：預約單操作 + 關閉 -->
+          <div class="row g-2">
+            <div class="col-5">
+              <button type="button" class="btn w-100" style="background-color: #f8bbd0; color: #000;" onclick="openEditPage()">
+                <i class="bi bi-pencil-square me-1"></i>預約單修改
+              </button>
+            </div>
+            <div class="col-5">
+              <button type="button" class="btn btn-info w-100" onclick="openCopyPage()">
+                <i class="bi bi-clipboard-plus me-1"></i>預約單複製
+              </button>
+            </div>
+            <div class="col-2">
+              <button type="button" class="btn btn-secondary w-100" data-bs-dismiss="modal">關閉</button>
+            </div>
+          </div>
+        </div>
+      </div><!-- /.modal-content -->
+    </div><!-- /.modal-dialog -->
+  </div><!-- /#detailModal -->
+
+  <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+  <script>
+    // 以原始包裝單位數量顯示 (不換算板數) 的單位
+    const RAW_QTY_UNITS = ['車', '櫃', '鋼瓶', '槽車', 'Y鋼瓶'];
+    const ALL_SLOTS = [
+      "07:00","07:30","08:00","08:30","09:00","09:30","10:00","10:30",
+      "11:00","11:30","13:00","13:30","14:00","14:30","15:00","15:30","16:00","16:30","17:00 以後"
+    ];
+
+    let currentSlots = [...ALL_SLOTS];
+    let currentData = null;
+    let webAppUrl = ''; // Index (客服預約/修改頁) 網址
+
+    document.addEventListener('DOMContentLoaded', () => {
+      document.getElementById('dashDate').value = (() => { const d = new Date(); return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0'); })(); // 本地時區日期，避免 08:00 前取到前一天
+      loadDashboard();
+      authRun().withSuccessHandler(url => { webAppUrl = url; }).getWebAppUrl();
+      setupAutoRefresh();
+    });
+
+    // ===== 自動刷新：僅 07:00~18:00（台北時間）、且分頁可見時，每 60 秒一次 =====
+    const AUTO_START_HOUR = 7, AUTO_END_HOUR = 18, AUTO_INTERVAL_MS = 60000;
+    const FULL_RELOAD_MS = 5 * 60 * 1000; // 保險：即使版本沒變，最久 5 分鐘也完整重抓一次
+    let lastLoadTime = 0;
+    let lastToken = '';        // 目前畫面資料對應的伺服器資料標記
+    let lastFullLoadTime = 0;  // 上次成功完整載入資料的時間
+
+    function isAutoRefreshWindow() {
+      const h = Number(new Intl.DateTimeFormat('en-GB', { timeZone: 'Asia/Taipei', hour: '2-digit', hour12: false }).format(new Date()));
+      return h >= AUTO_START_HOUR && h < AUTO_END_HOUR;
+    }
+
+    // 時段內、分頁可見、且距上次更新已超過 60 秒才更新
+    function autoRefreshIfNeeded() {
+      if (document.hidden || !isAutoRefreshWindow()) return;
+      if (Date.now() - lastLoadTime < AUTO_INTERVAL_MS) return;
+      checkForUpdate();
+    }
+
+    // 輕量檢查：只問伺服器「資料標記」（不讀 Sheet）；標記改變、或超過保險時間才完整重抓
+    function checkForUpdate() {
+      lastLoadTime = Date.now();
+      authRun()
+        .withSuccessHandler(info => {
+          if (!info || info.token !== lastToken || Date.now() - lastFullLoadTime > FULL_RELOAD_MS) {
+            loadDashboard();
+          } else {
+            document.getElementById('currentTimeDisplay').innerText = `更新於 ${info.time}`;
+          }
+        })
+        .withFailureHandler(() => { lastLoadTime = 0; }) // 失敗不算已檢查，下次立刻重試
+        .getDataVersion();
+    }
+
+    function setupAutoRefresh() {
+      setInterval(autoRefreshIfNeeded, 15000); // 每 15 秒檢查；實際刷新間隔仍受 60 秒限制
+      document.addEventListener('visibilitychange', autoRefreshIfNeeded); // 切回此分頁
+      window.addEventListener('focus', autoRefreshIfNeeded);
+      // 滑鼠/鍵盤/觸控操作（已有節流：60 秒內不重複刷新）
+      ['mousemove', 'keydown', 'touchstart', 'click'].forEach(ev =>
+        document.addEventListener(ev, autoRefreshIfNeeded, { passive: true }));
+    }
+
+function setTimeFilter(filter) {
+      document.querySelectorAll('.time-filter-btn').forEach(b => b.classList.remove('active'));
+      document.getElementById(`btn-${filter}`).classList.add('active');
+
+      if (filter === 'am') {
+        currentSlots = ALL_SLOTS.filter(s => s < "12:00");
+      } else if (filter === 'pm') {
+        // 因包含文字 "17:00 以後"，改用非上午時段判斷以正確涵蓋下午與 17:00 以後
+        currentSlots = ALL_SLOTS.filter(s => s >= "12:00" || s === "17:00 以後");
+      } else {
+        currentSlots = [...ALL_SLOTS];
+      }
+      renderGrid();
+    }
+
+    function loadDashboard(onCompleteCallback, forceFresh) {
+      lastLoadTime = Date.now(); // 先記錄，避免請求未回來前被重複觸發
+      const targetDate = document.getElementById('dashDate').value;
+      const done = () => { if (typeof onCompleteCallback === 'function') onCompleteCallback(); };
+      authRun()
+        .withSuccessHandler(data => {
+          done();
+          if(!data.success) { alert(data.message); return; }
+          currentData = data;
+          lastToken = data.dataToken || '';
+          lastFullLoadTime = Date.now();
+          document.getElementById('currentTimeDisplay').innerText = `更新於 ${data.currentTime}`;
+          document.getElementById('whStaffDisplay').innerText = data.warehouseStaff;
+          document.getElementById('csStaffDisplay').innerText = data.csStaff;
+          
+          renderOverdueAlerts(data.notifications);
+          renderGrid();
+        })
+        .withFailureHandler(err => done())
+        .getDashboardDataByDate(targetDate, !!forceFresh);
+    }
+
+    // 手動刷新按鈕：禁用按鈕並旋轉圖示，資料讀取完畢後恢復 (同 Gatekeeper)
+    function manualRefresh() {
+      const btn = document.getElementById('refreshBtn');
+      const icon = document.getElementById('refreshIcon');
+      btn.disabled = true;
+      icon.classList.add('spin-icon');
+
+      loadDashboard(() => {
+        btn.disabled = false;
+        icon.classList.remove('spin-icon');
+      }, true); // 手動更新：略過伺服器快取
+    }
+
+    function renderOverdueAlerts(notifs) {
+      const alertBox = document.getElementById('overdueAlertBox');
+      if (notifs && notifs.length > 0) {
+        alertBox.innerHTML = `<span class="text-danger fw-bold"><i class="bi bi-exclamation-triangle-fill me-1"></i>警報：有 ${notifs.length} 趟預約逾期未到廠！</span>`;
+      } else {
+        alertBox.innerHTML = `<i class="bi bi-check-circle text-success me-1"></i>目前無逾期未到的預約車輛`;
+      }
+    }
+
+    function renderGrid() {
+      if (!currentData) return;
+
+      // 1. 動態渲染表頭 (時段)
+      const headerRow = document.getElementById('timeSlotHeaderRow');
+      headerRow.innerHTML = '<th class="dock-header-col">碼頭 / 時段</th>' + 
+        currentSlots.map(s => `<th>${s}</th>`).join('');
+
+      // 2. 取得後端 MasterData 動態回傳的碼頭清單 (解決 Hardcoding)
+      const dockList = currentData.dockList && currentData.dockList.length > 0 
+        ? currentData.dockList 
+        : ['1號標準碼頭','2號標準碼頭','3號標準碼頭','4號標準碼頭','5號標準碼頭','6號鷗翼平面卸貨區','7號急單專用碼頭','壓板停放區1','壓板停放區2'];
+
+     // 3. 繪製網格列
+      const gridBody = document.getElementById('dockGridBody');
+      gridBody.innerHTML = dockList.map(dock => {
+        const slotsHtml = currentSlots.map(slot => {
+          // 【修改】將 find 改為 filter，允許同一時段同一碼頭抓取多筆排程並上下展開
+          const slotBookings = currentData.bookings.filter(b => b.assignedDock === dock && b.etaTimeSlot === slot);
+          
+          if (slotBookings.length > 0) {
+            const cardsHtml = slotBookings.map(booking => {
+              const opClass = booking.operationType === '出貨' ? 'op-out' : 'op-in';
+              const urgentClass = booking.priority === '急單' ? 'priority-urgent' : '';
+              const overdueClass = booking.isOverdue ? 'is-overdue' : '';
+              const completedClass = (['已完成', '離廠', '已放行離廠', '放行'].includes(booking.status)) ? 'status-completed' : '';
+
+              // 【新增】判斷是否為保稅
+              const isBonded = booking.taxType === '保稅';
+              const bondedTag = isBonded ? ' <span class="text-warning">(保稅)</span>' : '';
+
+              // 【新增】板數與運輸商資訊結合（如：1板_聯倉 或 1板 (聯倉)）
+              const carrierText = booking.carrier ? `_${booking.carrier}` : '';
+              const unit = String(booking.unit || '').trim();
+              const qtyText = RAW_QTY_UNITS.includes(unit) ? `${booking.quantity || 0}${unit}` : `${booking.convertedPallets || 0}板`;
+              const palletDisplay = `${qtyText}${carrierText}`;
+
+              return `
+                <div class="booking-card ${opClass} ${urgentClass} ${overdueClass} ${completedClass} position-relative mb-1" style="min-height: 80px;" onclick='openDetailModal(${JSON.stringify(booking)})'>
+                  <!-- 第一行：客戶名稱 + (保稅)標示 -->
+                  <div class="fw-bold text-break mb-1" style="font-size: 0.8rem; line-height: 1.2;">
+                    ${booking.customerName || ''}${bondedTag}
+                  </div>
+                  
+                  <!-- 第二行：僅出貨(綠框)顯示 出:出貨地 -->
+                  ${booking.operationType === '出貨' ? `
+                    <div class="text-truncate text-light small" style="font-size: 0.7rem; opacity: 0.9;">
+                      ${booking.origin || '未指定出貨地'}
+                    </div>
+                  ` : ''}
+
+                  <!-- 第三行：數量 + 運輸商 (不顯示車牌號碼) -->
+                  <div class="fw-bold text-warning mt-1" style="font-size: 0.85rem;">
+                    ${palletDisplay}
+                  </div>
+
+                  <!-- 右下角：顯示狀態 (如：預約中) -->
+                  <div class="position-absolute bottom-0 end-0 p-1">
+                    <span class="status-badge st-${booking.status}">${booking.status || '預約中'}</span>
+                  </div>
+                </div>
+              `;
+            }).join('');
+
+            return `<td>${cardsHtml}</td>`;
+          } else {
+            return '<td class="text-muted small"></td>';
+          }
+        }).join('');
+
+        return `
+          <tr>
+            <td class="dock-header-col">${dock}</td>
+            ${slotsHtml}
+          </tr>
+        `;
+      }).join('');
+    }
+
+    // 記錄目前開啟 Modal 的預約單號
+    let selectedBookingId = null;
+
+  // 快速操作展示 Modal 展示完整欄位
+    function openDetailModal(b) {
+      selectedBookingId = b.bookingId; 
+      // 【修正】將 預預單號 改為 預約單號
+      document.getElementById('modalBookingId').innerText = `預約單號：${b.bookingId}`;
+      document.getElementById('mCustomer').innerText = b.customerName || '-';
+
+      // 【修正】若為保稅，在作業類別後面加上 (保稅)
+      const bondedText = b.taxType === '保稅' ? ' (保稅)' : '';
+      document.getElementById('mOpType').innerText = `${b.operationType} (${b.priority})${bondedText}`;
+      
+      // 判斷作業類別是否為「出貨」，是的話顯示出貨地，否則隱藏
+      const originBox = document.getElementById('mOriginBox');
+      if (b.operationType && b.operationType.includes('出貨')) {
+        document.getElementById('mOrigin').innerText = b.origin || '未填寫';
+        originBox.style.display = 'block';
+      } else {
+        originBox.style.display = 'none';
+      }
+  
+
+      // 貨物品名、溫控條件
+      document.getElementById('mProduct').innerText = b.productName || '未填寫';
+      document.getElementById('mTemp').innerText = b.tempControl || '常溫';
+
+      // 板數展示無條件進位結果
+      document.getElementById('mPallets').innerText = `${b.convertedPallets} 板 (${b.quantity} ${b.unit})`;
+      document.getElementById('mDock').innerText = b.assignedDock;
+
+      document.getElementById('mCarrier').innerText = b.carrier || '-';
+      document.getElementById('mVehicle').innerText = `${b.vehicleType} / ${b.plateNumber}`;
+      
+      document.getElementById('mContainerType').innerText = b.containerType || '無';
+      document.getElementById('mContainerNumber').innerText = b.containerNumber || '無';
+
+      document.getElementById('mDriver').innerText = b.driverName || '-';
+      document.getElementById('mPhone').innerText = b.driverPhone || '-';
+      
+      document.getElementById('mRemarks').innerText = b.remarks || '無備註';
+
+      new bootstrap.Modal(document.getElementById('detailModal')).show();
+    }
+
+    // Modal 點擊更新狀態事件處理
+    function updateStatusFromModal(newStatus) {
+      if (!selectedBookingId) return;
+      authRun()
+        .withSuccessHandler(res => {
+          if (res && res.success) {
+            // 關閉 Modal
+            const modalEl = document.getElementById('detailModal');
+            const modal = bootstrap.Modal.getInstance(modalEl);
+            if (modal) modal.hide();
+            // 重新刷新畫面的資料網格
+            loadDashboard();
+          } else {
+            alert(res ? res.message : '更新失敗');
+          }
+        })
+        .updateVehicleGateStatus(selectedBookingId, newStatus);
+    }
+
+    // Modal「預約單修改」：另開分頁連結至 Index 修改頁並自動載入該單號
+    function openEditPage() {
+      if (!selectedBookingId) return;
+      if (!webAppUrl) { alert('系統網址載入中，請稍後再試一次'); return; }
+      window.open(`${webAppUrl}?bookingId=${encodeURIComponent(selectedBookingId)}`, '_blank');
+    }
+
+    // Modal「預約單複製」：另開分頁連結至 Index 新增頁，帶入該單內容 (不含時段與碼頭)
+    function openCopyPage() {
+      if (!selectedBookingId) return;
+      if (!webAppUrl) { alert('系統網址載入中，請稍後再試一次'); return; }
+      window.open(`${webAppUrl}?copyBookingId=${encodeURIComponent(selectedBookingId)}`, '_blank');
+    }
+  </script>
+</body>
+</html>
